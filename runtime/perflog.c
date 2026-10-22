@@ -34,7 +34,10 @@
 #include <sys/time.h>
 #include <sys/event.h>
 #include <sys/resource.h>
+#include <TargetConditionals.h>
+#if !TARGET_OS_IPHONE
 #include <libproc.h>
+#endif
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach-o/dyld.h>
@@ -171,6 +174,13 @@ static void write_syms(void){
 int metal_thermal_state(void);
 static void pl_second(void){
     uint64_t t = perflog_now_us();
+#if TARGET_OS_IPHONE
+    struct task_power_info_v2 p; memset(&p, 0, sizeof p);
+    mach_msg_type_number_t pn = TASK_POWER_INFO_V2_COUNT;
+    task_info(mach_task_self(), TASK_POWER_INFO_V2, (task_info_t)&p, &pn);
+    fprintf(f_sec, "%.3f,0,0,0,0,0,0,0,0,0,0,%llu,%d,0\n", t / 1e3,
+            (unsigned long long)p.gpu_energy.task_gpu_utilisation, metal_thermal_state());
+#else
     struct rusage_info_v6 r; memset(&r, 0, sizeof r);
     proc_pid_rusage(getpid(), RUSAGE_INFO_V6, (rusage_info_t *)&r);
     struct task_power_info_v2 p; memset(&p, 0, sizeof p);
@@ -184,6 +194,7 @@ static void pl_second(void){
             (unsigned long long)r.ri_user_ptime, (unsigned long long)r.ri_system_ptime,
             (unsigned long long)p.gpu_energy.task_gpu_utilisation, metal_thermal_state(),
             (unsigned long long)r.ri_phys_footprint);
+#endif
     thread_act_array_t list; mach_msg_type_number_t nl = 0;
     if (task_threads(mach_task_self(), &list, &nl) == KERN_SUCCESS){
         for (mach_msg_type_number_t i = 0; i < nl; i++){

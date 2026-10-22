@@ -15,7 +15,8 @@ echo "=== Building NFSU2 for iOS (Target: $TARGET, SDK: $SDK_PATH) ==="
 
 CFLAGS="-O3 -target $TARGET -isysroot $SDK_PATH -miphoneos-version-min=$MIN_IOS \
   -fobjc-arc -I$ROOT/runtime -I$ROOT/gen/all -Wno-unused-label -Wno-parentheses-equality \
-  -Wno-int-conversion -Wno-tautological-compare -Wno-unused-variable -Wno-deprecated-declarations"
+  -Wno-int-conversion -Wno-tautological-compare -Wno-unused-variable -Wno-deprecated-declarations \
+  -Wno-unguarded-availability -Wno-unguarded-availability-new -Wno-macro-redefined"
 
 LDFLAGS="-target $TARGET -isysroot $SDK_PATH -miphoneos-version-min=$MIN_IOS"
 

@@ -3365,6 +3365,7 @@ static void display_hz_apply(const char *why){
     int old = atomic_exchange(&g_display_hz, hz);
     if (old && old != hz) fprintf(stderr, "metal: display refresh %d Hz -> %d Hz (%s)\n", old, hz, why);
 }
+#if !TARGET_OS_IPHONE
 static void vsync_link_range(void);
 static void display_hz_update(NSScreen *sc){
     if (!sc) return;
@@ -3400,6 +3401,9 @@ static size_t panel_pixel_width(CGDirectDisplayID d){
     }
     return native ? native : best;
 }
+#else
+static _Atomic int g_scr_ppp1000 = 0;
+#endif
 /* Main thread: the screen the window is on (before it exists: the main
  * screen).  Called at start-up and whenever the window changes screen or
  * backing scale. */
@@ -3465,6 +3469,13 @@ void metal_native_size(unsigned gw, unsigned gh, unsigned *ow, unsigned *oh){
         /* exactly the bound win_apply_size will apply */
         aw = cw; ah = ch; s = s100 / 100.0;
     } else {
+#if TARGET_OS_IPHONE
+        UIScreen *sc = [UIScreen mainScreen];
+        CGRect b = [sc bounds];
+        s = [sc scale];
+        aw = b.size.width;
+        ah = b.size.height;
+#else
         /* No cached value: estimate with CoreGraphics (thread-safe). */
         CGDirectDisplayID d = CGMainDisplayID();
         CGRect b = CGDisplayBounds(d);                /* in POINTS */
@@ -3475,6 +3486,7 @@ void metal_native_size(unsigned gw, unsigned gh, unsigned *ow, unsigned *oh){
                 CGDisplayModeRelease(m); }
         /* menu bar / notch (<=32) + title bar (<=32) */
         aw = b.size.width; ah = b.size.height - 64.0;
+#endif
     }
     if (s < 1.0) s = 1.0;
     if (aw < 320.0 || ah < 240.0) return;

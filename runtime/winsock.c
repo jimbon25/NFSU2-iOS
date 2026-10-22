@@ -84,11 +84,17 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#ifndef __wasm__
+#include <TargetConditionals.h>
+#if !defined(__wasm__) && !TARGET_OS_IPHONE
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/route.h>
+#include <netdb.h>
+#elif TARGET_OS_IPHONE
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <net/if_dl.h>
 #include <netdb.h>
 #endif
 #include <netinet/in.h>
@@ -396,8 +402,8 @@ static int lan_ifname_ok(const char *n){
 }
 /* Interface name and index of the default IPv4 route (routing socket
  * RTM_GET: a read of the kernel's routing table, no traffic). */
-#ifdef __wasm__
-static int route_default_if(char *ifn, size_t ifnsz){ (void)ifn; (void)ifnsz; return 0; }   /* no interfaces in a browser */
+#if defined(__wasm__) || TARGET_OS_IPHONE
+static int route_default_if(char *ifn, size_t ifnsz){ (void)ifn; (void)ifnsz; return 0; }
 #else
 static int route_default_if(char *ifn, size_t ifnsz){
     int s = socket(PF_ROUTE, SOCK_RAW, AF_INET);

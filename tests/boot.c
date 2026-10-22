@@ -241,14 +241,7 @@ int nfsu2_boot_game(void){
     return 0;
 }
 
-#if TARGET_OS_IPHONE
-#import <UIKit/UIKit.h>
-int main(int argc, char **argv){
-    @autoreleasepool {
-        return UIApplicationMain(argc, argv, nil, @"NfsuAppDelegate");
-    }
-}
-#else
+#if !TARGET_OS_IPHONE
 int main(int argc, char **argv){
     (void)argc; (void)argv;
     return nfsu2_boot_game();
