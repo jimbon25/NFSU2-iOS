@@ -1141,3 +1141,12 @@ int career_cmd(CPU *c, const char *line, long *wait_start){
     }
     return 1;
 }
+
+/* iOS Money Mod Hook: Sets Career Bank balance */
+void nfsu2_grant_career_cash(uint32_t amount){
+    if (G_CAREER){
+        MR32(G_CAREER + 0x7134u) = amount;
+        fprintf(stderr, "[mod] Career bank set to $%u\n", amount);
+    }
+}
+

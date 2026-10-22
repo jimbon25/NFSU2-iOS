@@ -3,7 +3,15 @@
  * On macOS the window must live on the MAIN thread.  The guest already runs
  * on a separate thread, so that fits: the main thread runs the NSApplication
  * loop, the guest thread queues draw commands.                           */
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+static UIWindow        *g_win;
+#else
 #import <Cocoa/Cocoa.h>
+static NSWindow        *g_win;
+NSWindow *metal_nswindow(void){ return g_win; }          /* keyboard_mac.m */
+#endif
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/QuartzCore.h>
 
@@ -27,12 +35,21 @@
 #include <time.h>
 #include <stdlib.h>
 
-static NSWindow        *g_win;
-NSWindow *metal_nswindow(void){ return g_win; }          /* keyboard_mac.m */
 #import <ImageIO/ImageIO.h>
+#if !TARGET_OS_IPHONE
 #import <CoreServices/CoreServices.h>
+#endif
 
 static CAMetalLayer    *g_layer;
+void metal_set_layer(CAMetalLayer *layer){
+    g_layer = layer;
+    if (layer && g_dev){
+        layer.device = g_dev;
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        layer.framebufferOnly = NO;
+        layer.contentsGravity = kCAGravityResizeAspect;
+    }
+}
 static long             g_skip_empty;   /* frame with no content: do not present */
 static id<MTLTexture>   g_capture;   /* readable copy for frame capture */
 
@@ -3388,6 +3405,19 @@ static size_t panel_pixel_width(CGDirectDisplayID d){
  * backing scale. */
 static void scr_cache(void){
     @autoreleasepool {
+#if TARGET_OS_IPHONE
+        UIScreen *sc = [UIScreen mainScreen];
+        if (!sc) return;
+        CGRect b = [sc bounds];
+        CGFloat s = [sc scale];
+        atomic_store(&g_scr_cw, (int)b.size.width);
+        atomic_store(&g_scr_ch, (int)b.size.height);
+        atomic_store(&g_scr_s100, (int)lround(s * 100.0));
+        atomic_store(&g_scr_ppp1000, (int)lround(s * 1000.0));
+        int hz = 60;
+        if (sc.maximumFramesPerSecond > 0) hz = (int)sc.maximumFramesPerSecond;
+        atomic_store(&g_display_hz, hz);
+#else
         NSScreen *sc = (g_win && [g_win screen]) ? [g_win screen] : [NSScreen mainScreen];
         if (!sc) return;
         display_hz_update(sc);
@@ -3404,6 +3434,7 @@ static void scr_cache(void){
         if (shown++ < 4)
             fprintf(stderr, "metal: screen %.0fx%.0f pt, backing x%.2f, panel %zu px wide (%.3f px/pt)\n",
                     [sc frame].size.width, [sc frame].size.height, [sc backingScaleFactor], pw, ppp);
+#endif
     }
 }
 /* For widescreen.c (NFSU2_RENDER): backing pixels per point and physical
@@ -3543,6 +3574,15 @@ static CGFloat g_applied_cw = 0, g_applied_ch = 0;
 static int g_fs_transition = 0;
 static void win_apply_size(unsigned w, unsigned h){
     if (!g_layer) return;
+#if TARGET_OS_IPHONE
+    CGFloat s = [UIScreen mainScreen].scale;
+    if (s < 1.0) s = 1.0;
+    g_layer.contentsScale = s;
+    g_layer.drawableSize = CGSizeMake((CGFloat)w, (CGFloat)h);
+    atomic_store(&g_draw_w, (int)w); atomic_store(&g_draw_h, (int)h);
+    CGSize c = [UIScreen mainScreen].bounds.size;
+    atomic_store(&g_cont_w, (int)c.width); atomic_store(&g_cont_h, (int)c.height);
+#else
     CGFloat s = g_win ? [g_win backingScaleFactor]
                       : [[NSScreen mainScreen] backingScaleFactor];
     if (s < 1.0) s = 1.0;
@@ -3566,6 +3606,7 @@ static void win_apply_size(unsigned w, unsigned h){
     fprintf(stderr, "metal: %s: drawable %ux%u pixels, content %.0fx%.0f points (scale %.2g) -> %s\n",
             fs ? "fullscreen" : "window", w, h, (double)c.width, (double)c.height, (double)s,
             exact ? "1:1" : "scaled to the window");
+#endif
 }
 /* The VIEW (pixels) the settings menu rows are based on: in fullscreen the
  * fullscreen content, in a window the window's current content; if the
@@ -4057,18 +4098,22 @@ void metal_early_init(void){
     /* Measure the screen geometry on the main thread BEFORE the guest thread
      * starts: the guest picks the drawing size in CreateDevice from it
      * (boot.c calls this function before pthread_create). */
+#if !TARGET_OS_IPHONE
     [NSApplication sharedApplication];
+#endif
     scr_cache();
     /* App Nap / timer coalescing OFF.  While the game window is not in
      * front, macOS drops the process to background QoS and the work moves
      * to the EFFICIENCY cores -- measured: same binary, same scene, 36 ms
      * per frame instead of 10 ms (3.4x).  clang from the same shell ran at
      * full speed, so it was the APP being throttled, not the machine. */
+#if !TARGET_OS_IPHONE
     { static id act; if (!act)
         act = [[NSProcessInfo processInfo] beginActivityWithOptions:
                  NSActivityUserInitiated | NSActivityLatencyCritical
                  reason:@"rendering game frames"];
       (void)act; }
+#endif
     dump_init();
     g_dev = MTLCreateSystemDefaultDevice();
     if (!g_dev){ fprintf(stderr, "metal: no device found\n"); return; }
@@ -4379,6 +4424,9 @@ static void dump_one_texture_face(unsigned id_, long frame, int face){
 /* The game draws its own cursor; if the macOS cursor is visible too there
  * are two cursors on screen.  Hide the system cursor while inside the game
  * area, bring it back on leaving. */
+#if TARGET_OS_IPHONE
+static void cursor_hide_update(int inside){ (void)inside; }
+#else
 static int g_cur_hidden = 0;
 static void cursor_hide_update(int inside){
     if (inside && !g_cur_hidden){ [NSCursor hide];   g_cur_hidden = 1; }
@@ -4395,6 +4443,7 @@ static void cursor_hide_update(int inside){
     return l;
 }
 @end
+#endif
 
 /* The fullscreen preference is remembered across runs.  NFSFULL=1/0
  * overrides it (measurement runs with NFSFULL=0 do not depend on the
@@ -4456,11 +4505,17 @@ static void link_hz_note(double dur){
 }
 - (void)tick:(id)link {
     void hfr_note_vsync(double ts, double duration);
+#if TARGET_OS_IPHONE
+    CADisplayLink *l = link;
+    hfr_note_vsync(l.timestamp, l.duration);
+    link_hz_note(l.duration);
+#else
     if (@available(macOS 14.0, *)){
         CADisplayLink *l = link;
         hfr_note_vsync(l.timestamp, l.duration);
         link_hz_note(l.duration);
     }
+#endif
 }
 @end
 static NfsuVsync *g_vs_obj;
@@ -4469,13 +4524,30 @@ static id g_vs_link;
  * could run the link slower while the game renders slowly (a load), and the
  * lower link rate would then pull NFSU2_FPS=auto down with it. */
 static void vsync_link_range(void){
+#if TARGET_OS_IPHONE
+    if (!g_vs_link || g_screen_hz <= 0) return;
+    CADisplayLink *l = g_vs_link;
+    float m = (float)g_screen_hz;
+    l.preferredFrameRateRange = CAFrameRateRangeMake(m, m, m);
+#else
     if (@available(macOS 14.0, *)){
         if (!g_vs_link || g_screen_hz <= 0) return;
         CADisplayLink *l = g_vs_link;
         float m = (float)g_screen_hz;
         l.preferredFrameRateRange = CAFrameRateRangeMake(m, m, m);
     }
+#endif
 }
+#if TARGET_OS_IPHONE
+static void vsync_link_start(UIView *v){
+    if (ENVC("NFSU2_NO_VSYNC_CLOCK")) return;
+    g_vs_obj = [NfsuVsync new];
+    CADisplayLink *l = [CADisplayLink displayLinkWithTarget:g_vs_obj selector:@selector(tick:)];
+    [l addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    g_vs_link = l;
+    vsync_link_range();
+}
+#else
 static void vsync_link_start(NSView *v){
     if (ENVC("NFSU2_NO_VSYNC_CLOCK")) return;
     if (@available(macOS 14.0, *)){
@@ -4486,6 +4558,7 @@ static void vsync_link_start(NSView *v){
         vsync_link_range();
     }
 }
+#endif
 /* A display reconfiguration (mode, resolution, refresh rate, arrangement)
  * that need not move the window to another screen or change its backing
  * scale, so neither windowDidChangeScreen: nor
@@ -4512,6 +4585,7 @@ static void power_state_changed(void){
     fprintf(stderr, "app: Low Power Mode %s, refresh %d Hz\n", lpm ? "on" : "off", atomic_load(&g_display_hz));
 }
 
+#if !TARGET_OS_IPHONE
 @interface NfsuDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate> @end
 @implementation NfsuDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)s { (void)s; return YES; }
@@ -4625,513 +4699,12 @@ static void power_state_changed(void){
     (void)s; lifecycle_request_quit("Cmd-Q / Dock / logout");
     return NSTerminateCancel; }
 @end
+#endif
 
 /* Must be called on the main thread. Opens the window and runs the NSApp
  * loop; does not return (until the app quits).                          */
-void metal_run_main_loop(void){
-    @autoreleasepool {
-        metal_early_init();
-        if (!g_dev) return;
 
-        [NSApplication sharedApplication];
-        /* NOFOCUS=1 (test runs): no Dock icon, no focus stealing; the window
-         * opens behind.  The user's keyboard does not go to the test window. */
-        [NSApp setActivationPolicy:(ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0')
-                                   ? NSApplicationActivationPolicyAccessory
-                                   : NSApplicationActivationPolicyRegular];
-        NfsuDelegate *del = [NfsuDelegate new];
-        [NSApp setDelegate:del];
-        /* We do not call [NSApp run] (the event loop is driven by hand below).
-         * finishLaunching is normally run's first job: it registers the
-         * AppleEvent handlers.  Without it the app never answers "Quit" (Dock >
-         * Quit, logout, osascript quit) -- the process stays hung. */
-        [NSApp finishLaunching];
-
-        /* Menu bar.  Since the event loop is driven by hand below, AppKit
-         * does not set it up by itself: in an app without a menu Cmd-Q,
-         * Cmd-H, Cmd-M do not work and the window looks "stuck". */
-        {   NSMenu *bar = [NSMenu new];
-            NSMenuItem *appItem = [NSMenuItem new];
-            [bar addItem:appItem];
-            NSMenu *appMenu = [NSMenu new];
-            [appMenu addItemWithTitle:@"About NFSU2"
-                               action:@selector(orderFrontStandardAboutPanel:)
-                        keyEquivalent:@""];
-            [appMenu addItem:[NSMenuItem separatorItem]];
-            [appMenu addItemWithTitle:@"Hide NFSU2" action:@selector(hide:) keyEquivalent:@"h"];
-            [appMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:)
-                        keyEquivalent:@"m"];
-            [appMenu addItemWithTitle:@"Toggle Full Screen"
-                               action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
-            /* macOS's standard shortcut Ctrl+Cmd+F (without a menu item it
-             * was bound to nothing); the item stays hidden in the menu. */
-            { NSMenuItem *fs2 = [appMenu addItemWithTitle:@"Toggle Full Screen (Ctrl+Cmd+F)"
-                                   action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
-              [fs2 setKeyEquivalentModifierMask:NSEventModifierFlagControl | NSEventModifierFlagCommand];
-              if (@available(macOS 13.0, *)){
-                  [fs2 setHidden:YES]; [fs2 setAllowsKeyEquivalentWhenHidden:YES]; } }
-            fpscounter_add_menu(appMenu);      /* Cmd-N: frame-rate counter */
-            texrep_add_menu(appMenu);          /* Cmd-T, shown once a texture pack is in use */
-            [appMenu addItem:[NSMenuItem separatorItem]];
-            [appMenu addItemWithTitle:@"Quit NFSU2" action:@selector(terminate:)
-                        keyEquivalent:@"q"];
-            [appItem setSubmenu:appMenu];
-            [NSApp setMainMenu:bar];
-        }
-
-        /* The window size used to be FIXED at 1280x720: even when the game
-         * asked CreateDevice for another resolution (g_RacingResolution in the
-         * registry) the window did not change.  Since the device can be
-         * created BEFORE Metal, the requested size is read here. */
-        unsigned rw = g_want_w ? g_want_w : 1280u, rh = g_want_h ? g_want_h : 720u;
-        /* If the game has not created its device yet, the placeholder is
-         * Retina-scaled too; otherwise the window first opens at half size
-         * (640x360 points) and grows when CreateDevice arrives.  Since nearly
-         * all of the game's modes are 4:3, the placeholder has a 1280x960
-         * aspect: in the most common case the window never jumps at CreateDevice. */
-        if (!g_want_w){ const char *nv = ENVC("NFSNATIVE");
-            if (!(nv && nv[0] == '0')){ rw = 1280u; rh = 960u;
-                                         metal_native_size(1280u, 960u, &rw, &rh); } }
-        NSRect frame = NSMakeRect(0, 0, (CGFloat)rw, (CGFloat)rh);
-        g_win = [[NSWindow alloc] initWithContentRect:frame
-                    styleMask:NFSU_WIN_STYLE
-                      backing:NSBackingStoreBuffered defer:NO];
-        [g_win setTitle:NFS_ENHANCED ? @"Need for Speed Underground 2 HD - native ARM64"
-                                     : @"Need for Speed Underground 2 - native ARM64"];
-        [g_win setDelegate:del];
-        [g_win setRestorable:NO];        /* no Saved Application State */
-
-        NfsuView *view = [[NfsuView alloc] initWithFrame:frame];
-        [view setWantsLayer:YES];
-        [g_win setContentView:view];
-        g_layer = (CAMetalLayer *)view.layer;
-        /* Needed so that StretchRect can read from the back buffer. */
-        g_layer.framebufferOnly = NO;
-        /* NOVSYNC=1: turn vsync off.  For MEASUREMENT only -- with it off
-         * the image tears and 1:1 fidelity is lost.
-         * Display sync stays on in every paced NFSU2_FPS mode (framerate.c
-         * paces the frames; a composited window cannot tear anyway); only
-         * NOVSYNC=1 and NFSU2_FPS=uncapped present immediately. */
-        { int hfr_uncapped(void);
-          if (ENVC("NOVSYNC") || hfr_uncapped()) g_layer.displaySyncEnabled = NO; }
-
-        /* The green button goes fullscreen.  The drawing surface stays at
-         * the size the game asked for; scale it up KEEPING the aspect ratio,
-         * otherwise a 5:4 image is stretched across a wide screen. */
-        [g_win setCollectionBehavior:[g_win collectionBehavior] |
-                NSWindowCollectionBehaviorFullScreenPrimary];
-        g_layer.contentsGravity = kCAGravityResizeAspect;
-        g_win.backgroundColor = [NSColor blackColor];
-
-        /* Match the window to the drawing surface one to one (see win_apply_size). */
-        win_apply_size(rw, rh);
-        [g_win center];
-        display_hz_update([g_win screen] ? [g_win screen] : [NSScreen mainScreen]);
-        vsync_link_start(view);
-        /* Refresh changes that do not move the window (see display_hz_apply).
-         * The main loop runs the main queue when it pumps events. */
-        [[NSNotificationCenter defaultCenter]
-            addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil
-                         queue:[NSOperationQueue mainQueue]
-                    usingBlock:^(NSNotification *nt){ (void)nt; screen_params_changed("display reconfigured"); }];
-        if (@available(macOS 12.0, *))
-            [[NSNotificationCenter defaultCenter]
-                addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil
-                             queue:[NSOperationQueue mainQueue]
-                        usingBlock:^(NSNotification *nt){ (void)nt; power_state_changed(); }];
-        [g_win setAcceptsMouseMovedEvents:YES];
-        /* NOFOCUS=1: open in the background and do NOT take focus from the
-         * app the user is working in (for automated test/measurement runs). */
-        if (ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0'){
-            /* NOFOCUS=2: the window is NEVER visible (fully transparent, lets
-             * the mouse through).  The window server still has it on screen,
-             * so drawables and DUMPFRAME work as usual; with =1 it was behind
-             * but visible. */
-            if (ENVC("NOFOCUS")[0] == '2'){ [g_win setAlphaValue:0.0];
-                                            [g_win setIgnoresMouseEvents:YES];
-                                            [g_win setHasShadow:NO]; }
-            [g_win orderBack:nil];
-        }
-        else { [g_win makeKeyAndOrderFront:nil];
-               [NSApp activateIgnoringOtherApps:YES]; }
-        if (fs_pref_load()) [g_win toggleFullScreen:nil];
-
-        /* the draw resources were set up in metal_early_init() */
-        fprintf(stderr, "metal: window open (%s), draw path %s\n",
-                [[g_dev name] UTF8String], g_pso ? "READY" : "MISSING");
-
-        /* QUITFRAMES=<n>: exit CLEANLY after n presented frames.  The ALARM
-         * path calls _exit from the signal handler; that path skips atexit
-         * (and the PGO profile write). */
-        long quitat = 0;
-        { const char *e = ENVC("QUITFRAMES"); if (e && *e) quitat = atol(e); }
-
-        /* Draw loop: present the queued frame at 60 Hz */
-        while (!atomic_load(&g_should_quit)){
-            if (quitat && atomic_load(&g_frames_drawn) >= quitat){
-                atomic_store(&g_should_quit, 1); break; }
-            lifecycle_tick();
-            rt_free_pending();
-            /* FSFAKE=<frame>[,...]: fake a fullscreen transition as THE GAME
-             * sees it, without touching the window (view = screen size, device
-             * loss); real fullscreen is not reliable in the background (test). */
-            { static long ff[8]; static int fn = -1, fi = 0;
-              if (fn < 0){ fn = 0; const char *e = ENVC("FSFAKE");
-                  for (const char *p = e; p && *p && fn < 8; ){
-                      ff[fn++] = atol(p); while (*p && *p != ',') p++; if (*p) p++; } }
-              if (fi < fn && atomic_load(&g_frames_drawn) >= ff[fi]){
-                  fi++;
-                  int on = !atomic_load(&g_fs);
-                  if (on){ NSScreen *sc = [NSScreen mainScreen]; CGFloat k = [sc backingScaleFactor];
-                           NSRect fr = [sc frame]; CGFloat top = 0;
-                           if (@available(macOS 12.0, *)) top = [sc safeAreaInsets].top;
-                           atomic_store(&g_fs_pw, (int)lround(fr.size.width * k));
-                           atomic_store(&g_fs_ph, (int)lround((fr.size.height - top) * k)); }
-                  atomic_store(&g_fs, on);
-                  fprintf(stderr, "app: FSFAKE frame %ld -> %s (%dx%d)\n", atomic_load(&g_frames_drawn),
-                          on ? "fullscreen" : "window", atomic_load(&g_fs_pw), atomic_load(&g_fs_ph));
-                  com_request_reset(); } }
-            /* FSSIM=<frame>:<k|m|c>[,...]: queue SYNTHETIC input at that frame
-             * (test): k = fn+F, m = Ctrl+Cmd+F, c = a click on the green button,
-             * p = Cmd+N (frame-rate counter).
-             * The events pass through the event loop below like real input. */
-            { static long sf[8]; static char sm[8]; static int sn = -1, si = 0;
-              if (sn < 0){ sn = 0; const char *e = ENVC("FSSIM");
-                  for (const char *p = e; p && *p && sn < 8; ){
-                      sf[sn] = atol(p); while (*p && *p != ':' && *p != ',') p++;
-                      sm[sn] = (*p == ':') ? p[1] : 'k'; sn++;
-                      while (*p && *p != ',') p++; if (*p) p++; } }
-              if (si < sn && atomic_load(&g_frames_drawn) >= sf[si]){
-                  char md = sm[si++]; NSInteger wn = [g_win windowNumber];
-                  fprintf(stderr, "app: FSSIM frame %ld mode %c\n", atomic_load(&g_frames_drawn), md);
-                  if (md == 'k' || md == 'm' || md == 'p'){
-                      NSEventModifierFlags fl = md == 'k' ? NSEventModifierFlagFunction
-                          : md == 'p' ? NSEventModifierFlagCommand
-                          : (NSEventModifierFlagControl | NSEventModifierFlagCommand);
-                      NSString *ch = md == 'p' ? @"n" : @"f";      /* kVK_ANSI_N 0x2D, kVK_ANSI_F 0x03 */
-                      for (int ud = 0; ud < 2; ud++){
-                          NSEvent *ke = [NSEvent keyEventWithType:ud ? NSEventTypeKeyUp : NSEventTypeKeyDown
-                              location:NSZeroPoint modifierFlags:fl timestamp:0 windowNumber:wn
-                              context:nil characters:ch charactersIgnoringModifiers:ch
-                              isARepeat:NO keyCode:md == 'p' ? 0x2D : 0x03];
-                          [NSApp postEvent:ke atStart:NO]; }
-                  } else {
-                      NSButton *zb = [g_win standardWindowButton:NSWindowZoomButton];
-                      NSPoint cp = zb ? [zb convertPoint:NSMakePoint(NSMidX([zb bounds]), NSMidY([zb bounds])) toView:nil]
-                                      : NSZeroPoint;
-                      for (int ud = 0; ud < 2; ud++){
-                          NSEvent *me = [NSEvent mouseEventWithType:ud ? NSEventTypeLeftMouseUp : NSEventTypeLeftMouseDown
-                              location:cp modifierFlags:0 timestamp:0 windowNumber:wn context:nil
-                              eventNumber:0 clickCount:1 pressure:ud ? 0.f : 1.f];
-                          [NSApp postEvent:me atStart:NO]; }
-                  } } }
-            /* QUITSIM=<frame>:<k|t|c> (test): quit the way a user does, through
-             * AppKit -- k = a Cmd-Q key event into the queue (menu key
-             * equivalent), t = [NSApp terminate:] (Dock > Quit, logout),
-             * c = [window performClose:] (the close button). */
-            { static long qf = -1; static char qm = 0;
-              if (qf == -1){ qf = -2; const char *e = ENVC("QUITSIM");
-                  if (e && *e){ qf = atol(e); const char *c2 = strchr(e, ':'); qm = c2 ? c2[1] : 'k'; } }
-              if (qf >= 0 && atomic_load(&g_frames_drawn) >= qf){
-                  fprintf(stderr, "app: QUITSIM frame %ld mode %c\n", atomic_load(&g_frames_drawn), qm);
-                  qf = -2;
-                  if (qm == 't') [NSApp terminate:nil];
-                  else if (qm == 'c') [g_win performClose:nil];
-                  else {
-                      NSEvent *ke = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
-                          modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:[g_win windowNumber]
-                          context:nil characters:@"q" charactersIgnoringModifiers:@"q" isARepeat:NO keyCode:0x0C];
-                      [NSApp postEvent:ke atStart:NO];
-                  } } }
-            /* REFRESHSIM=<frame>:<what>[,...] (test): run the refresh-rate
-             * paths without touching the user's display settings.  what =
-             * "params" (a display reconfiguration), "power" (a Low Power Mode
-             * change) or "link:<hz>" (the display link reports <hz> from now
-             * on; link:0 = its real rate again). */
-            { static long rf[8]; static char rwh[8][16]; static int rn = -1, ri = 0;
-              if (rn < 0){ rn = 0; const char *e = ENVC("REFRESHSIM");
-                  for (const char *p = e; p && *p && rn < 8; ){
-                      rf[rn] = atol(p); rwh[rn][0] = 0;
-                      const char *q = strchr(p, ':'), *end = strchr(p, ',');
-                      if (q && (!end || q < end)){
-                          size_t l = end ? (size_t)(end - q - 1) : strlen(q + 1);
-                          if (l > 15) l = 15;
-                          memcpy(rwh[rn], q + 1, l); rwh[rn][l] = 0; }
-                      rn++; while (*p && *p != ',') p++; if (*p) p++; } }
-              if (ri < rn && atomic_load(&g_frames_drawn) >= rf[ri]){
-                  const char *w = rwh[ri++];
-                  fprintf(stderr, "app: REFRESHSIM frame %ld -> %s\n", atomic_load(&g_frames_drawn), w);
-                  if (!strcmp(w, "power")) power_state_changed();
-                  else if (!strncmp(w, "link:", 5)){
-                      /* applied at once: the link may not tick at all (it
-                       * stops while the display sleeps); while it ticks it
-                       * keeps reporting the simulated rate */
-                      g_link_sim_hz = atoi(w + 5); g_link_hz = g_link_sim_hz;
-                      display_hz_apply("display link (REFRESHSIM)"); }
-                  else screen_params_changed("display reconfigured (REFRESHSIM)");
-              } }
-            /* WINSIM=<frame>:<w>x<h>[,...]: resize the window content to w x h
-             * points at that frame, like a zoom or tiling resize (test; with
-             * NOFOCUS=2 the window is invisible).  <w>x<h> = "s" instead
-             * re-runs the screen-change path (screen metrics + reset). */
-            { static long wf[8]; static double ww[8], wh[8]; static int wn = -1, wi = 0;
-              if (wn < 0){ wn = 0; const char *e = ENVC("WINSIM");
-                  for (const char *p = e; p && *p && wn < 8; ){
-                      wf[wn] = atol(p); ww[wn] = wh[wn] = 0;
-                      const char *q = strchr(p, ':');
-                      if (q && q[1] != 's') sscanf(q + 1, "%lfx%lf", &ww[wn], &wh[wn]);
-                      wn++; while (*p && *p != ',') p++; if (*p) p++; } }
-              if (wi < wn && atomic_load(&g_frames_drawn) >= wf[wi]){
-                  int k = wi++;
-                  fprintf(stderr, "app: WINSIM frame %ld -> %s %.0fx%.0f\n", atomic_load(&g_frames_drawn),
-                          ww[k] > 0 ? "resize" : "screen change", ww[k], wh[k]);
-                  if (ww[k] >= 160 && wh[k] >= 120) [g_win setContentSize:NSMakeSize(ww[k], wh[k])];
-                  else [del windowDidChangeScreen:[NSNotification notificationWithName:NSWindowDidChangeScreenNotification object:g_win]];
-              } }
-            /* MOUSESIM=<frame>:<x>,<y>[:c][;...]: at that frame post a mouse move
-             * (and with :c a left click) to the window content at x, y given
-             * as fractions of the content width/height from the top left
-             * (test of the point -> game cursor mapping; goes through the
-             * normal event path below). */
-            { static long mf[16]; static double mx[16], my[16]; static char mc[16];
-              static int mn = -1, mi = 0;
-              static long up_at = -1; static NSPoint up_p;      /* release 8 frames later */
-              if (up_at >= 0 && atomic_load(&g_frames_drawn) >= up_at){
-                  up_at = -1;
-                  [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:up_p
-                      modifierFlags:0 timestamp:[[NSProcessInfo processInfo] systemUptime]
-                      windowNumber:[g_win windowNumber] context:nil eventNumber:0 clickCount:1
-                      pressure:0.f] atStart:NO]; }
-              if (mn < 0){ mn = 0; const char *e = ENVC("MOUSESIM");
-                  for (const char *p = e; p && *p && mn < 16; ){
-                      mf[mn] = atol(p); mx[mn] = my[mn] = 0.5; mc[mn] = 0;
-                      const char *q = strchr(p, ':');
-                      if (q){ sscanf(q + 1, "%lf,%lf", &mx[mn], &my[mn]);
-                              const char *q2 = strchr(q + 1, ':');
-                              const char *end = strchr(p, ';');
-                              if (q2 && (!end || q2 < end) && q2[1] == 'c') mc[mn] = 1; }
-                      mn++; while (*p && *p != ';') p++; if (*p) p++; } }
-              if (mi < mn && atomic_load(&g_frames_drawn) >= mf[mi]){
-                  int k = mi++;
-                  NSRect cr = [[g_win contentView] frame];
-                  NSPoint lp = NSMakePoint(cr.origin.x + mx[k] * cr.size.width,
-                                           cr.origin.y + (1.0 - my[k]) * cr.size.height);
-                  NSInteger wn = [g_win windowNumber];
-                  NSEventType ts[2] = { NSEventTypeMouseMoved, NSEventTypeLeftMouseDown };
-                  if (mc[k]){ up_at = atomic_load(&g_frames_drawn) + 8; up_p = lp; }
-                  for (int t = 0; t < (mc[k] ? 2 : 1); t++){
-                      NSEvent *me = [NSEvent mouseEventWithType:ts[t] location:lp modifierFlags:0
-                          timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:wn context:nil
-                          eventNumber:0 clickCount:1 pressure:t == 1 ? 1.f : 0.f];
-                      [NSApp postEvent:me atStart:NO]; }
-                  int gx, gy; mouse_from_point(lp.x, lp.y, &gx, &gy);
-                  fprintf(stderr, "app: MOUSESIM frame %ld at %.3f,%.3f (%.0f,%.0f pt)%s -> game %d,%d\n",
-                          atomic_load(&g_frames_drawn), mx[k], my[k], lp.x, lp.y,
-                          mc[k] ? " click" : "", gx, gy);
-              } }
-            /* autotest.c "click <x> <y>": the same left click as MOUSESIM's
-             * ":c", requested by the input script (fractions of the content
-             * from the top left), released 8 frames later. */
-            { static long cup = -1; static NSPoint cp;
-              NSInteger wn = [g_win windowNumber];
-              if (cup >= 0 && atomic_load(&g_frames_drawn) >= cup){
-                  cup = -1;
-                  [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:cp modifierFlags:0
-                      timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:wn context:nil
-                      eventNumber:0 clickCount:1 pressure:0.f] atStart:NO]; }
-              if (atomic_exchange(&g_click_req, 0)){
-                  NSRect cr = [[g_win contentView] frame];
-                  cp = NSMakePoint(cr.origin.x + g_click_x * cr.size.width, cr.origin.y + (1.0 - g_click_y) * cr.size.height);
-                  NSEventType ts[2] = { NSEventTypeMouseMoved, NSEventTypeLeftMouseDown };
-                  for (int t = 0; t < 2; t++)
-                      [NSApp postEvent:[NSEvent mouseEventWithType:ts[t] location:cp modifierFlags:0
-                          timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:wn context:nil
-                          eventNumber:0 clickCount:1 pressure:t == 1 ? 1.f : 0.f] atStart:NO];
-                  cup = atomic_load(&g_frames_drawn) + 8;
-                  int gx, gy; mouse_from_point(cp.x, cp.y, &gx, &gy);
-                  fprintf(stderr, "app: script click frame %ld at %.3f,%.3f -> game %d,%d\n",
-                          atomic_load(&g_frames_drawn), g_click_x, g_click_y, gx, gy);
-              } }
-            /* FSTOGGLE=<frame>[,<frame>...]: toggle fullscreen at those frames (test) */
-            { static long tg[8]; static int tn = -1, ti = 0;
-              if (tn < 0){ tn = 0; const char *e = ENVC("FSTOGGLE");
-                  for (const char *p = e; p && *p && tn < 8; ){
-                      tg[tn++] = atol(p); while (*p && *p != ',') p++; if (*p) p++; } }
-              if (ti < tn && atomic_load(&g_frames_drawn) >= tg[ti]){
-                  ti++; fprintf(stderr, "app: FSTOGGLE frame %ld\n", atomic_load(&g_frames_drawn));
-                  [g_win toggleFullScreen:nil]; } }
-            @autoreleasepool {
-                kbdmac_tick();                   /* synthesised keys (autotest ns*) into the queue */
-                NSEvent *ev;
-                while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                                untilDate:nil
-                                                   inMode:NSDefaultRunLoopMode
-                                                  dequeue:YES])){
-                    NSEventType et = [ev type];
-                    if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp || et == NSEventTypeFlagsChanged){
-                        /* keys for another window of ours (About, a panel) */
-                        if ([ev window] && [ev window] != g_win){ [NSApp sendEvent:ev]; continue; }
-                        /* macOS's fullscreen shortcut fn/Globe+F: it carries
-                         * no Command, so it used to reach the game as "F".  Only
-                         * the key down: an F the game holds and that is
-                         * released while fn is down must still get its key
-                         * up (kbdmac_handle drops an F up it never saw go
-                         * down). */
-                        if (et == NSEventTypeKeyDown && [ev keyCode] == 0x03 &&
-                            ([ev modifierFlags] & NSEventModifierFlagFunction)){
-                            if (![ev isARepeat]) [g_win toggleFullScreen:nil];
-                            continue; }
-                        /* The game's keys (keyboard_mac.m).  Command shortcuts
-                         * go to the menu, never to the game (Cmd-Q, Cmd-H,
-                         * Cmd-M, Cmd-F, Ctrl-Cmd-F). */
-                        if (!kbdmac_handle(ev)) [NSApp sendEvent:ev];
-                        continue;
-                    }
-                    /* A mouse event OUTSIDE the game area (title bar:
-                     * close/minimise/fullscreen buttons, dragging the window,
-                     * resizing from an edge) must go to AppKit.  All clicks
-                     * used to be swallowed by the game; the green button did
-                     * not work. */
-                    int m_ev = (et == NSEventTypeMouseMoved || et == NSEventTypeLeftMouseDragged ||
-                                et == NSEventTypeRightMouseDragged || et == NSEventTypeLeftMouseDown ||
-                                et == NSEventTypeLeftMouseUp || et == NSEventTypeRightMouseDown ||
-                                et == NSEventTypeRightMouseUp || et == NSEventTypeOtherMouseDown ||
-                                et == NSEventTypeOtherMouseUp || et == NSEventTypeOtherMouseDragged);
-                    /* buttons: 0 left, 1 right, 2 middle, 3.. the others (DIMOUSESTATE2 has 8) */
-                    int mb = (et == NSEventTypeLeftMouseDown || et == NSEventTypeLeftMouseUp) ? 0
-                           : (et == NSEventTypeRightMouseDown || et == NSEventTypeRightMouseUp) ? 1
-                           : (et == NSEventTypeOtherMouseDown || et == NSEventTypeOtherMouseUp)
-                             ? (int)MIN([ev buttonNumber], 7) : -1;
-                    int m_up = (et == NSEventTypeLeftMouseUp || et == NSEventTypeRightMouseUp ||
-                                et == NSEventTypeOtherMouseUp);
-                    if (m_ev){
-                        int inside = [ev window] == g_win &&
-                            NSPointInRect([ev locationInWindow], [[g_win contentView] frame]);
-                        if (m_up && mb >= 0) mouse_button(mb, 0, [ev modifierFlags]);
-                        if (!inside){
-                            if (et == NSEventTypeMouseMoved) cursor_hide_update(0);
-                            [NSApp sendEvent:ev]; continue; }
-                    }
-                    if (et == NSEventTypeMouseMoved || et == NSEventTypeLeftMouseDragged ||
-                        et == NSEventTypeRightMouseDragged || et == NSEventTypeOtherMouseDragged){
-                        NSPoint pt = [ev locationInWindow];
-                        cursor_hide_update([ev window] == g_win &&
-                            NSPointInRect(pt, [[g_win contentView] frame]) && [g_win isKeyWindow]);
-                        int nx, ny; mouse_from_point(pt.x, pt.y, &nx, &ny);
-                        double msx, msy; mouse_delta_scale(&msx, &msy);
-                        atomic_fetch_add(&g_mouse_dx, (int)([ev deltaX] * msx));
-                        atomic_fetch_add(&g_mouse_dy, (int)([ev deltaY] * msy));
-                        atomic_store(&g_mouse_x, nx);
-                        atomic_store(&g_mouse_y, ny);
-                        kbd_post_mousemove(mouse_mk([ev modifierFlags]), mouse_lp());
-                        continue;
-                    }
-                    if (mb >= 0){ if (!m_up) mouse_button(mb, 1, [ev modifierFlags]); continue; }
-                    if (et == NSEventTypeScrollWheel){
-                        /* 120 = one notch (WHEEL_DELTA); fractions of a line add up */
-                        static double acc = 0;
-                        acc += [ev deltaY] * 120.0;
-                        int dz = (int)acc;
-                        acc -= dz;
-                        if (dz){
-                            atomic_fetch_add(&g_mouse_dz, dz);
-                            kbd_post(0x020Au, ((uint32_t)(dz & 0xFFFF) << 16) | mouse_mk([ev modifierFlags]),
-                                     mouse_lp());                         /* WM_MOUSEWHEEL */
-                        }
-                        continue;
-                    }
-                    [NSApp sendEvent:ev];
-                }
-
-                /* Also service the run-loop sources outside the event queue.
-                 * AppleEvents (Dock > Quit, the "quit" command, logout)
-                 * arrive here; if only nextEventMatching... is called the
-                 * app never answers a Quit. */
-                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
-                                         beforeDate:[NSDate distantPast]];
-
-                /* AUTOKEY=<dik>[,<dik>...]: periodic synthetic key presses to
-                 * measure whether the game reacts to input. */
-                /* AUTOCLICK=1: periodic synthetic left click + small mouse move.
-                 * For measuring whether input reaches the game. */
-                if (ENVC("AUTOCLICK")){
-                    long f = atomic_load(&g_frames_drawn);
-                    long ph = f % 120;
-                    if (ph == 0){ atomic_fetch_add(&g_mouse_dx, 3);
-                                  atomic_fetch_add(&g_mouse_dy, 2); }
-                    if (ph == 60) atomic_fetch_or(&g_mouse_btn, 1u);
-                    if (ph == 70) atomic_fetch_and(&g_mouse_btn, ~1u);
-                }
-                /* AUTOSEQ="<frame>:<dik>,<frame>:<dik>,...": press a key once
-                 * at the given frame (for 10 frames).  AUTOKEY presses all
-                 * the time; walking the menus to reach a given scene needed
-                 * a scriptable sequence. */
-                /* AUTOSEQ="<frame>:<dik>[:<dur>],...": hold the key for <dur>
-                 * frames from that frame on (default 8).  The duration was
-                 * needed: without driving the car we cannot see the
-                 * headlights hit the surface. */
-                { enum { SQMAX = 64 };
-                  static int sqinit = 0; static long sqf[SQMAX], sqd[SQMAX];
-                  static unsigned char sqk[SQMAX]; static int sqn = 0;
-                  if (!sqinit){ sqinit = 1;
-                    const char *e = ENVC("AUTOSEQ");
-                    const char *q = e;
-                    for (; q && *q && sqn < SQMAX; ){
-                        while (*q==',' || *q==' ') q++;
-                        if (!*q) break;
-                        sqf[sqn] = strtol(q, 0, 0);
-                        const char *c2 = strchr(q, ':');
-                        if (!c2) break;
-                        sqk[sqn] = (unsigned char)strtoul(c2+1, 0, 0);
-                        const char *c3 = strchr(c2+1, ':');
-                        const char *comma = strchr(q, ',');
-                        sqd[sqn] = (c3 && (!comma || c3 < comma)) ? strtol(c3+1, 0, 0) : 8;
-                        if (sqd[sqn] < 1) sqd[sqn] = 8;
-                        sqn++;
-                        while (*q && *q != ',') q++;
-                    }
-                    /* do not truncate SILENTLY past the limit (in one test the
-                     * trailing Enters were lost and the game seemed "stuck") */
-                    while (q && (*q == ',' || *q == ' ')) q++;
-                    if (q && *q) fprintf(stderr, "app: WARNING AUTOSEQ cut at %d entries, the rest ignored\n", SQMAX);
-                  }
-                  if (sqn){
-                    long f = atomic_load(&g_frames_drawn);
-                    for (int q = 0; q < sqn; q++){
-                        int on = (f >= sqf[q] && f < sqf[q] + sqd[q]);
-                        if (on || f == sqf[q] + sqd[q])
-                            kbd_set_key(KSRC_LEGACY, sqk[q], on);
-                    }
-                  }
-                }
-                { static int akinit = 0; static unsigned char akk[64]; static int akn = 0;
-                  if (!akinit){ akinit = 1;
-                    const char *e = ENVC("AUTOKEY");
-                    for (const char *q = e; q && *q && akn < 64; ){
-                        while (*q==',' || *q==' ') q++;
-                        if (!*q) break;
-                        akk[akn++] = (unsigned char)strtoul(q, 0, 0);
-                        while (*q && *q != ',') q++;
-                    }
-                  }
-                  /* AUTOKEYSTOP=<frame>: stop pressing after this frame.
-                   * With AUTOKEY pressing Enter all the time the pre-race
-                   * CUTSCENE was skipped; this was needed to see it. */
-                  { static long akstop = -2;
-                    if (akstop == -2){ const char *e = ENVC("AUTOKEYSTOP");
-                        akstop = (e && *e) ? strtol(e, 0, 0) : -1; }
-                    if (akn){
-                      long f = atomic_load(&g_frames_drawn);
-                      if (akstop >= 0 && f > akstop){
-                          for (int q = 0; q < akn; q++) kbd_set_key(KSRC_LEGACY, akk[q], 0);
-                      } else {
-                          int slot = (int)((f / 30) % akn);
-                          int on = (f % 30) < 10;
-                          for (int q = 0; q < akn; q++)
-                              kbd_set_key(KSRC_LEGACY, akk[q], on && q == slot);
-                      }
-                    } }
-                }
+static void render_ready_frame(void){
                 int have_new;
                 pthread_mutex_lock(&g_qlock); have_new = (g_ready >= 0);
                 pthread_mutex_unlock(&g_qlock);
@@ -6120,7 +5693,11 @@ void metal_run_main_loop(void){
                         int fc_px = fpscounter_on() && rb >= 0;
                         double fc_ppp = atomic_load(&g_cont_w) > 0 ? (double)d.texture.width / atomic_load(&g_cont_w) : 2.0;
                         unsigned fc_bw = 0, fc_bh = 0;
+#if TARGET_OS_IPHONE
+                        if (fc_px){ double bs = [UIScreen mainScreen].scale;
+#else
                         if (fc_px){ double bs = g_win ? [g_win backingScaleFactor] : 2.0;
+#endif
                             fc_bw = (unsigned)lround(atomic_load(&g_cont_w) * bs);
                             fc_bh = (unsigned)lround(atomic_load(&g_cont_h) * bs); }
                         if (fc_px && fpscounter_in_dumps()){
@@ -6248,6 +5825,520 @@ void metal_run_main_loop(void){
                         (void)fno;
                     }
                 }
+}
+
+void metal_render_one_frame(void){
+    @autoreleasepool {
+        render_ready_frame();
+    }
+}
+
+#if !TARGET_OS_IPHONE
+void metal_run_main_loop(void){
+    @autoreleasepool {
+        metal_early_init();
+        if (!g_dev) return;
+
+        [NSApplication sharedApplication];
+        /* NOFOCUS=1 (test runs): no Dock icon, no focus stealing; the window
+         * opens behind.  The user's keyboard does not go to the test window. */
+        [NSApp setActivationPolicy:(ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0')
+                                   ? NSApplicationActivationPolicyAccessory
+                                   : NSApplicationActivationPolicyRegular];
+        NfsuDelegate *del = [NfsuDelegate new];
+        [NSApp setDelegate:del];
+        /* We do not call [NSApp run] (the event loop is driven by hand below).
+         * finishLaunching is normally run's first job: it registers the
+         * AppleEvent handlers.  Without it the app never answers "Quit" (Dock >
+         * Quit, logout, osascript quit) -- the process stays hung. */
+        [NSApp finishLaunching];
+
+        /* Menu bar.  Since the event loop is driven by hand below, AppKit
+         * does not set it up by itself: in an app without a menu Cmd-Q,
+         * Cmd-H, Cmd-M do not work and the window looks "stuck". */
+        {   NSMenu *bar = [NSMenu new];
+            NSMenuItem *appItem = [NSMenuItem new];
+            [bar addItem:appItem];
+            NSMenu *appMenu = [NSMenu new];
+            [appMenu addItemWithTitle:@"About NFSU2"
+                               action:@selector(orderFrontStandardAboutPanel:)
+                        keyEquivalent:@""];
+            [appMenu addItem:[NSMenuItem separatorItem]];
+            [appMenu addItemWithTitle:@"Hide NFSU2" action:@selector(hide:) keyEquivalent:@"h"];
+            [appMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:)
+                        keyEquivalent:@"m"];
+            [appMenu addItemWithTitle:@"Toggle Full Screen"
+                               action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
+            /* macOS's standard shortcut Ctrl+Cmd+F (without a menu item it
+             * was bound to nothing); the item stays hidden in the menu. */
+            { NSMenuItem *fs2 = [appMenu addItemWithTitle:@"Toggle Full Screen (Ctrl+Cmd+F)"
+                                   action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
+              [fs2 setKeyEquivalentModifierMask:NSEventModifierFlagControl | NSEventModifierFlagCommand];
+              if (@available(macOS 13.0, *)){
+                  [fs2 setHidden:YES]; [fs2 setAllowsKeyEquivalentWhenHidden:YES]; } }
+            fpscounter_add_menu(appMenu);      /* Cmd-N: frame-rate counter */
+            texrep_add_menu(appMenu);          /* Cmd-T, shown once a texture pack is in use */
+            [appMenu addItem:[NSMenuItem separatorItem]];
+            [appMenu addItemWithTitle:@"Quit NFSU2" action:@selector(terminate:)
+                        keyEquivalent:@"q"];
+            [appItem setSubmenu:appMenu];
+            [NSApp setMainMenu:bar];
+        }
+
+        /* The window size used to be FIXED at 1280x720: even when the game
+         * asked CreateDevice for another resolution (g_RacingResolution in the
+         * registry) the window did not change.  Since the device can be
+         * created BEFORE Metal, the requested size is read here. */
+        unsigned rw = g_want_w ? g_want_w : 1280u, rh = g_want_h ? g_want_h : 720u;
+        /* If the game has not created its device yet, the placeholder is
+         * Retina-scaled too; otherwise the window first opens at half size
+         * (640x360 points) and grows when CreateDevice arrives.  Since nearly
+         * all of the game's modes are 4:3, the placeholder has a 1280x960
+         * aspect: in the most common case the window never jumps at CreateDevice. */
+        if (!g_want_w){ const char *nv = ENVC("NFSNATIVE");
+            if (!(nv && nv[0] == '0')){ rw = 1280u; rh = 960u;
+                                         metal_native_size(1280u, 960u, &rw, &rh); } }
+        NSRect frame = NSMakeRect(0, 0, (CGFloat)rw, (CGFloat)rh);
+        g_win = [[NSWindow alloc] initWithContentRect:frame
+                    styleMask:NFSU_WIN_STYLE
+                      backing:NSBackingStoreBuffered defer:NO];
+        [g_win setTitle:NFS_ENHANCED ? @"Need for Speed Underground 2 HD - native ARM64"
+                                     : @"Need for Speed Underground 2 - native ARM64"];
+        [g_win setDelegate:del];
+        [g_win setRestorable:NO];        /* no Saved Application State */
+
+        NfsuView *view = [[NfsuView alloc] initWithFrame:frame];
+        [view setWantsLayer:YES];
+        [g_win setContentView:view];
+        g_layer = (CAMetalLayer *)view.layer;
+        /* Needed so that StretchRect can read from the back buffer. */
+        g_layer.framebufferOnly = NO;
+        /* NOVSYNC=1: turn vsync off.  For MEASUREMENT only -- with it off
+         * the image tears and 1:1 fidelity is lost.
+         * Display sync stays on in every paced NFSU2_FPS mode (framerate.c
+         * paces the frames; a composited window cannot tear anyway); only
+         * NOVSYNC=1 and NFSU2_FPS=uncapped present immediately. */
+        { int hfr_uncapped(void);
+          if (ENVC("NOVSYNC") || hfr_uncapped()) g_layer.displaySyncEnabled = NO; }
+
+        /* The green button goes fullscreen.  The drawing surface stays at
+         * the size the game asked for; scale it up KEEPING the aspect ratio,
+         * otherwise a 5:4 image is stretched across a wide screen. */
+        [g_win setCollectionBehavior:[g_win collectionBehavior] |
+                NSWindowCollectionBehaviorFullScreenPrimary];
+        g_layer.contentsGravity = kCAGravityResizeAspect;
+        g_win.backgroundColor = [NSColor blackColor];
+
+        /* Match the window to the drawing surface one to one (see win_apply_size). */
+        win_apply_size(rw, rh);
+        [g_win center];
+        display_hz_update([g_win screen] ? [g_win screen] : [NSScreen mainScreen]);
+        vsync_link_start(view);
+        /* Refresh changes that do not move the window (see display_hz_apply).
+         * The main loop runs the main queue when it pumps events. */
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSApplicationDidChangeScreenParametersNotification object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *nt){ (void)nt; screen_params_changed("display reconfigured"); }];
+        if (@available(macOS 12.0, *))
+            [[NSNotificationCenter defaultCenter]
+                addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil
+                             queue:[NSOperationQueue mainQueue]
+                        usingBlock:^(NSNotification *nt){ (void)nt; power_state_changed(); }];
+        [g_win setAcceptsMouseMovedEvents:YES];
+        /* NOFOCUS=1: open in the background and do NOT take focus from the
+         * app the user is working in (for automated test/measurement runs). */
+        if (ENVC("NOFOCUS") && ENVC("NOFOCUS")[0] != '0'){
+            /* NOFOCUS=2: the window is NEVER visible (fully transparent, lets
+             * the mouse through).  The window server still has it on screen,
+             * so drawables and DUMPFRAME work as usual; with =1 it was behind
+             * but visible. */
+            if (ENVC("NOFOCUS")[0] == '2'){ [g_win setAlphaValue:0.0];
+                                            [g_win setIgnoresMouseEvents:YES];
+                                            [g_win setHasShadow:NO]; }
+            [g_win orderBack:nil];
+        }
+        else { [g_win makeKeyAndOrderFront:nil];
+               [NSApp activateIgnoringOtherApps:YES]; }
+        if (fs_pref_load()) [g_win toggleFullScreen:nil];
+
+        /* the draw resources were set up in metal_early_init() */
+        fprintf(stderr, "metal: window open (%s), draw path %s\n",
+                [[g_dev name] UTF8String], g_pso ? "READY" : "MISSING");
+
+        /* QUITFRAMES=<n>: exit CLEANLY after n presented frames.  The ALARM
+         * path calls _exit from the signal handler; that path skips atexit
+         * (and the PGO profile write). */
+        long quitat = 0;
+        { const char *e = ENVC("QUITFRAMES"); if (e && *e) quitat = atol(e); }
+
+        /* Draw loop: present the queued frame at 60 Hz */
+        while (!atomic_load(&g_should_quit)){
+            if (quitat && atomic_load(&g_frames_drawn) >= quitat){
+                atomic_store(&g_should_quit, 1); break; }
+            lifecycle_tick();
+            rt_free_pending();
+            /* FSFAKE=<frame>[,...]: fake a fullscreen transition as THE GAME
+             * sees it, without touching the window (view = screen size, device
+             * loss); real fullscreen is not reliable in the background (test). */
+            { static long ff[8]; static int fn = -1, fi = 0;
+              if (fn < 0){ fn = 0; const char *e = ENVC("FSFAKE");
+                  for (const char *p = e; p && *p && fn < 8; ){
+                      ff[fn++] = atol(p); while (*p && *p != ',') p++; if (*p) p++; } }
+              if (fi < fn && atomic_load(&g_frames_drawn) >= ff[fi]){
+                  fi++;
+                  int on = !atomic_load(&g_fs);
+                  if (on){ NSScreen *sc = [NSScreen mainScreen]; CGFloat k = [sc backingScaleFactor];
+                           NSRect fr = [sc frame]; CGFloat top = 0;
+                           if (@available(macOS 12.0, *)) top = [sc safeAreaInsets].top;
+                           atomic_store(&g_fs_pw, (int)lround(fr.size.width * k));
+                           atomic_store(&g_fs_ph, (int)lround((fr.size.height - top) * k)); }
+                  atomic_store(&g_fs, on);
+                  fprintf(stderr, "app: FSFAKE frame %ld -> %s (%dx%d)\n", atomic_load(&g_frames_drawn),
+                          on ? "fullscreen" : "window", atomic_load(&g_fs_pw), atomic_load(&g_fs_ph));
+                  com_request_reset(); } }
+            /* FSSIM=<frame>:<k|m|c>[,...]: queue SYNTHETIC input at that frame
+             * (test): k = fn+F, m = Ctrl+Cmd+F, c = a click on the green button,
+             * p = Cmd+N (frame-rate counter).
+             * The events pass through the event loop below like real input. */
+            { static long sf[8]; static char sm[8]; static int sn = -1, si = 0;
+              if (sn < 0){ sn = 0; const char *e = ENVC("FSSIM");
+                  for (const char *p = e; p && *p && sn < 8; ){
+                      sf[sn] = atol(p); while (*p && *p != ':' && *p != ',') p++;
+                      sm[sn] = (*p == ':') ? p[1] : 'k'; sn++;
+                      while (*p && *p != ',') p++; if (*p) p++; } }
+              if (si < sn && atomic_load(&g_frames_drawn) >= sf[si]){
+                  char md = sm[si++]; NSInteger wn = [g_win windowNumber];
+                  fprintf(stderr, "app: FSSIM frame %ld mode %c\n", atomic_load(&g_frames_drawn), md);
+                  if (md == 'k' || md == 'm' || md == 'p'){
+                      NSEventModifierFlags fl = md == 'k' ? NSEventModifierFlagFunction
+                          : md == 'p' ? NSEventModifierFlagCommand
+                          : (NSEventModifierFlagControl | NSEventModifierFlagCommand);
+                      NSString *ch = md == 'p' ? @"n" : @"f";      /* kVK_ANSI_N 0x2D, kVK_ANSI_F 0x03 */
+                      for (int ud = 0; ud < 2; ud++){
+                          NSEvent *ke = [NSEvent keyEventWithType:ud ? NSEventTypeKeyUp : NSEventTypeKeyDown
+                              location:NSZeroPoint modifierFlags:fl timestamp:0 windowNumber:wn
+                              context:nil characters:ch charactersIgnoringModifiers:ch
+                              isARepeat:NO keyCode:md == 'p' ? 0x2D : 0x03];
+                          [NSApp postEvent:ke atStart:NO]; }
+                  } else {
+                      NSButton *zb = [g_win standardWindowButton:NSWindowZoomButton];
+                      NSPoint cp = zb ? [zb convertPoint:NSMakePoint(NSMidX([zb bounds]), NSMidY([zb bounds])) toView:nil]
+                                      : NSZeroPoint;
+                      for (int ud = 0; ud < 2; ud++){
+                          NSEvent *me = [NSEvent mouseEventWithType:ud ? NSEventTypeLeftMouseUp : NSEventTypeLeftMouseDown
+                              location:cp modifierFlags:0 timestamp:0 windowNumber:wn context:nil
+                              eventNumber:0 clickCount:1 pressure:ud ? 0.f : 1.f];
+                          [NSApp postEvent:me atStart:NO]; }
+                  } } }
+            /* QUITSIM=<frame>:<k|t|c> (test): quit the way a user does, through
+             * AppKit -- k = a Cmd-Q key event into the queue (menu key
+             * equivalent), t = [NSApp terminate:] (Dock > Quit, logout),
+             * c = [window performClose:] (the close button). */
+            { static long qf = -1; static char qm = 0;
+              if (qf == -1){ qf = -2; const char *e = ENVC("QUITSIM");
+                  if (e && *e){ qf = atol(e); const char *c2 = strchr(e, ':'); qm = c2 ? c2[1] : 'k'; } }
+              if (qf >= 0 && atomic_load(&g_frames_drawn) >= qf){
+                  fprintf(stderr, "app: QUITSIM frame %ld mode %c\n", atomic_load(&g_frames_drawn), qm);
+                  qf = -2;
+                  if (qm == 't') [NSApp terminate:nil];
+                  else if (qm == 'c') [g_win performClose:nil];
+                  else {
+                      NSEvent *ke = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+                          modifierFlags:NSEventModifierFlagCommand timestamp:0 windowNumber:[g_win windowNumber]
+                          context:nil characters:@"q" charactersIgnoringModifiers:@"q" isARepeat:NO keyCode:0x0C];
+                      [NSApp postEvent:ke atStart:NO];
+                  } } }
+            /* REFRESHSIM=<frame>:<what>[,...] (test): run the refresh-rate
+             * paths without touching the user's display settings.  what =
+             * "params" (a display reconfiguration), "power" (a Low Power Mode
+             * change) or "link:<hz>" (the display link reports <hz> from now
+             * on; link:0 = its real rate again). */
+            { static long rf[8]; static char rwh[8][16]; static int rn = -1, ri = 0;
+              if (rn < 0){ rn = 0; const char *e = ENVC("REFRESHSIM");
+                  for (const char *p = e; p && *p && rn < 8; ){
+                      rf[rn] = atol(p); rwh[rn][0] = 0;
+                      const char *q = strchr(p, ':'), *end = strchr(p, ',');
+                      if (q && (!end || q < end)){
+                          size_t l = end ? (size_t)(end - q - 1) : strlen(q + 1);
+                          if (l > 15) l = 15;
+                          memcpy(rwh[rn], q + 1, l); rwh[rn][l] = 0; }
+                      rn++; while (*p && *p != ',') p++; if (*p) p++; } }
+              if (ri < rn && atomic_load(&g_frames_drawn) >= rf[ri]){
+                  const char *w = rwh[ri++];
+                  fprintf(stderr, "app: REFRESHSIM frame %ld -> %s\n", atomic_load(&g_frames_drawn), w);
+                  if (!strcmp(w, "power")) power_state_changed();
+                  else if (!strncmp(w, "link:", 5)){
+                      /* applied at once: the link may not tick at all (it
+                       * stops while the display sleeps); while it ticks it
+                       * keeps reporting the simulated rate */
+                      g_link_sim_hz = atoi(w + 5); g_link_hz = g_link_sim_hz;
+                      display_hz_apply("display link (REFRESHSIM)"); }
+                  else screen_params_changed("display reconfigured (REFRESHSIM)");
+              } }
+            /* WINSIM=<frame>:<w>x<h>[,...]: resize the window content to w x h
+             * points at that frame, like a zoom or tiling resize (test; with
+             * NOFOCUS=2 the window is invisible).  <w>x<h> = "s" instead
+             * re-runs the screen-change path (screen metrics + reset). */
+            { static long wf[8]; static double ww[8], wh[8]; static int wn = -1, wi = 0;
+              if (wn < 0){ wn = 0; const char *e = ENVC("WINSIM");
+                  for (const char *p = e; p && *p && wn < 8; ){
+                      wf[wn] = atol(p); ww[wn] = wh[wn] = 0;
+                      const char *q = strchr(p, ':');
+                      if (q && q[1] != 's') sscanf(q + 1, "%lfx%lf", &ww[wn], &wh[wn]);
+                      wn++; while (*p && *p != ',') p++; if (*p) p++; } }
+              if (wi < wn && atomic_load(&g_frames_drawn) >= wf[wi]){
+                  int k = wi++;
+                  fprintf(stderr, "app: WINSIM frame %ld -> %s %.0fx%.0f\n", atomic_load(&g_frames_drawn),
+                          ww[k] > 0 ? "resize" : "screen change", ww[k], wh[k]);
+                  if (ww[k] >= 160 && wh[k] >= 120) [g_win setContentSize:NSMakeSize(ww[k], wh[k])];
+                  else [del windowDidChangeScreen:[NSNotification notificationWithName:NSWindowDidChangeScreenNotification object:g_win]];
+              } }
+            /* MOUSESIM=<frame>:<x>,<y>[:c][;...]: at that frame post a mouse move
+             * (and with :c a left click) to the window content at x, y given
+             * as fractions of the content width/height from the top left
+             * (test of the point -> game cursor mapping; goes through the
+             * normal event path below). */
+            { static long mf[16]; static double mx[16], my[16]; static char mc[16];
+              static int mn = -1, mi = 0;
+              static long up_at = -1; static NSPoint up_p;      /* release 8 frames later */
+              if (up_at >= 0 && atomic_load(&g_frames_drawn) >= up_at){
+                  up_at = -1;
+                  [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:up_p
+                      modifierFlags:0 timestamp:[[NSProcessInfo processInfo] systemUptime]
+                      windowNumber:[g_win windowNumber] context:nil eventNumber:0 clickCount:1
+                      pressure:0.f] atStart:NO]; }
+              if (mn < 0){ mn = 0; const char *e = ENVC("MOUSESIM");
+                  for (const char *p = e; p && *p && mn < 16; ){
+                      mf[mn] = atol(p); mx[mn] = my[mn] = 0.5; mc[mn] = 0;
+                      const char *q = strchr(p, ':');
+                      if (q){ sscanf(q + 1, "%lf,%lf", &mx[mn], &my[mn]);
+                              const char *q2 = strchr(q + 1, ':');
+                              const char *end = strchr(p, ';');
+                              if (q2 && (!end || q2 < end) && q2[1] == 'c') mc[mn] = 1; }
+                      mn++; while (*p && *p != ';') p++; if (*p) p++; } }
+              if (mi < mn && atomic_load(&g_frames_drawn) >= mf[mi]){
+                  int k = mi++;
+                  NSRect cr = [[g_win contentView] frame];
+                  NSPoint lp = NSMakePoint(cr.origin.x + mx[k] * cr.size.width,
+                                           cr.origin.y + (1.0 - my[k]) * cr.size.height);
+                  NSInteger wn = [g_win windowNumber];
+                  NSEventType ts[2] = { NSEventTypeMouseMoved, NSEventTypeLeftMouseDown };
+                  if (mc[k]){ up_at = atomic_load(&g_frames_drawn) + 8; up_p = lp; }
+                  for (int t = 0; t < (mc[k] ? 2 : 1); t++){
+                      NSEvent *me = [NSEvent mouseEventWithType:ts[t] location:lp modifierFlags:0
+                          timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:wn context:nil
+                          eventNumber:0 clickCount:1 pressure:t == 1 ? 1.f : 0.f];
+                      [NSApp postEvent:me atStart:NO]; }
+                  int gx, gy; mouse_from_point(lp.x, lp.y, &gx, &gy);
+                  fprintf(stderr, "app: MOUSESIM frame %ld at %.3f,%.3f (%.0f,%.0f pt)%s -> game %d,%d\n",
+                          atomic_load(&g_frames_drawn), mx[k], my[k], lp.x, lp.y,
+                          mc[k] ? " click" : "", gx, gy);
+              } }
+            /* autotest.c "click <x> <y>": the same left click as MOUSESIM's
+             * ":c", requested by the input script (fractions of the content
+             * from the top left), released 8 frames later. */
+            { static long cup = -1; static NSPoint cp;
+              NSInteger wn = [g_win windowNumber];
+              if (cup >= 0 && atomic_load(&g_frames_drawn) >= cup){
+                  cup = -1;
+                  [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:cp modifierFlags:0
+                      timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:wn context:nil
+                      eventNumber:0 clickCount:1 pressure:0.f] atStart:NO]; }
+              if (atomic_exchange(&g_click_req, 0)){
+                  NSRect cr = [[g_win contentView] frame];
+                  cp = NSMakePoint(cr.origin.x + g_click_x * cr.size.width, cr.origin.y + (1.0 - g_click_y) * cr.size.height);
+                  NSEventType ts[2] = { NSEventTypeMouseMoved, NSEventTypeLeftMouseDown };
+                  for (int t = 0; t < 2; t++)
+                      [NSApp postEvent:[NSEvent mouseEventWithType:ts[t] location:cp modifierFlags:0
+                          timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:wn context:nil
+                          eventNumber:0 clickCount:1 pressure:t == 1 ? 1.f : 0.f] atStart:NO];
+                  cup = atomic_load(&g_frames_drawn) + 8;
+                  int gx, gy; mouse_from_point(cp.x, cp.y, &gx, &gy);
+                  fprintf(stderr, "app: script click frame %ld at %.3f,%.3f -> game %d,%d\n",
+                          atomic_load(&g_frames_drawn), g_click_x, g_click_y, gx, gy);
+              } }
+            /* FSTOGGLE=<frame>[,<frame>...]: toggle fullscreen at those frames (test) */
+            { static long tg[8]; static int tn = -1, ti = 0;
+              if (tn < 0){ tn = 0; const char *e = ENVC("FSTOGGLE");
+                  for (const char *p = e; p && *p && tn < 8; ){
+                      tg[tn++] = atol(p); while (*p && *p != ',') p++; if (*p) p++; } }
+              if (ti < tn && atomic_load(&g_frames_drawn) >= tg[ti]){
+                  ti++; fprintf(stderr, "app: FSTOGGLE frame %ld\n", atomic_load(&g_frames_drawn));
+                  [g_win toggleFullScreen:nil]; } }
+            @autoreleasepool {
+                kbdmac_tick();                   /* synthesised keys (autotest ns*) into the queue */
+                NSEvent *ev;
+                while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                                untilDate:nil
+                                                   inMode:NSDefaultRunLoopMode
+                                                  dequeue:YES])){
+                    NSEventType et = [ev type];
+                    if (et == NSEventTypeKeyDown || et == NSEventTypeKeyUp || et == NSEventTypeFlagsChanged){
+                        /* keys for another window of ours (About, a panel) */
+                        if ([ev window] && [ev window] != g_win){ [NSApp sendEvent:ev]; continue; }
+                        /* macOS's fullscreen shortcut fn/Globe+F: it carries
+                         * no Command, so it used to reach the game as "F".  Only
+                         * the key down: an F the game holds and that is
+                         * released while fn is down must still get its key
+                         * up (kbdmac_handle drops an F up it never saw go
+                         * down). */
+                        if (et == NSEventTypeKeyDown && [ev keyCode] == 0x03 &&
+                            ([ev modifierFlags] & NSEventModifierFlagFunction)){
+                            if (![ev isARepeat]) [g_win toggleFullScreen:nil];
+                            continue; }
+                        /* The game's keys (keyboard_mac.m).  Command shortcuts
+                         * go to the menu, never to the game (Cmd-Q, Cmd-H,
+                         * Cmd-M, Cmd-F, Ctrl-Cmd-F). */
+                        if (!kbdmac_handle(ev)) [NSApp sendEvent:ev];
+                        continue;
+                    }
+                    /* A mouse event OUTSIDE the game area (title bar:
+                     * close/minimise/fullscreen buttons, dragging the window,
+                     * resizing from an edge) must go to AppKit.  All clicks
+                     * used to be swallowed by the game; the green button did
+                     * not work. */
+                    int m_ev = (et == NSEventTypeMouseMoved || et == NSEventTypeLeftMouseDragged ||
+                                et == NSEventTypeRightMouseDragged || et == NSEventTypeLeftMouseDown ||
+                                et == NSEventTypeLeftMouseUp || et == NSEventTypeRightMouseDown ||
+                                et == NSEventTypeRightMouseUp || et == NSEventTypeOtherMouseDown ||
+                                et == NSEventTypeOtherMouseUp || et == NSEventTypeOtherMouseDragged);
+                    /* buttons: 0 left, 1 right, 2 middle, 3.. the others (DIMOUSESTATE2 has 8) */
+                    int mb = (et == NSEventTypeLeftMouseDown || et == NSEventTypeLeftMouseUp) ? 0
+                           : (et == NSEventTypeRightMouseDown || et == NSEventTypeRightMouseUp) ? 1
+                           : (et == NSEventTypeOtherMouseDown || et == NSEventTypeOtherMouseUp)
+                             ? (int)MIN([ev buttonNumber], 7) : -1;
+                    int m_up = (et == NSEventTypeLeftMouseUp || et == NSEventTypeRightMouseUp ||
+                                et == NSEventTypeOtherMouseUp);
+                    if (m_ev){
+                        int inside = [ev window] == g_win &&
+                            NSPointInRect([ev locationInWindow], [[g_win contentView] frame]);
+                        if (m_up && mb >= 0) mouse_button(mb, 0, [ev modifierFlags]);
+                        if (!inside){
+                            if (et == NSEventTypeMouseMoved) cursor_hide_update(0);
+                            [NSApp sendEvent:ev]; continue; }
+                    }
+                    if (et == NSEventTypeMouseMoved || et == NSEventTypeLeftMouseDragged ||
+                        et == NSEventTypeRightMouseDragged || et == NSEventTypeOtherMouseDragged){
+                        NSPoint pt = [ev locationInWindow];
+                        cursor_hide_update([ev window] == g_win &&
+                            NSPointInRect(pt, [[g_win contentView] frame]) && [g_win isKeyWindow]);
+                        int nx, ny; mouse_from_point(pt.x, pt.y, &nx, &ny);
+                        double msx, msy; mouse_delta_scale(&msx, &msy);
+                        atomic_fetch_add(&g_mouse_dx, (int)([ev deltaX] * msx));
+                        atomic_fetch_add(&g_mouse_dy, (int)([ev deltaY] * msy));
+                        atomic_store(&g_mouse_x, nx);
+                        atomic_store(&g_mouse_y, ny);
+                        kbd_post_mousemove(mouse_mk([ev modifierFlags]), mouse_lp());
+                        continue;
+                    }
+                    if (mb >= 0){ if (!m_up) mouse_button(mb, 1, [ev modifierFlags]); continue; }
+                    if (et == NSEventTypeScrollWheel){
+                        /* 120 = one notch (WHEEL_DELTA); fractions of a line add up */
+                        static double acc = 0;
+                        acc += [ev deltaY] * 120.0;
+                        int dz = (int)acc;
+                        acc -= dz;
+                        if (dz){
+                            atomic_fetch_add(&g_mouse_dz, dz);
+                            kbd_post(0x020Au, ((uint32_t)(dz & 0xFFFF) << 16) | mouse_mk([ev modifierFlags]),
+                                     mouse_lp());                         /* WM_MOUSEWHEEL */
+                        }
+                        continue;
+                    }
+                    [NSApp sendEvent:ev];
+                }
+
+                /* Also service the run-loop sources outside the event queue.
+                 * AppleEvents (Dock > Quit, the "quit" command, logout)
+                 * arrive here; if only nextEventMatching... is called the
+                 * app never answers a Quit. */
+                [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                                         beforeDate:[NSDate distantPast]];
+
+                /* AUTOKEY=<dik>[,<dik>...]: periodic synthetic key presses to
+                 * measure whether the game reacts to input. */
+                /* AUTOCLICK=1: periodic synthetic left click + small mouse move.
+                 * For measuring whether input reaches the game. */
+                if (ENVC("AUTOCLICK")){
+                    long f = atomic_load(&g_frames_drawn);
+                    long ph = f % 120;
+                    if (ph == 0){ atomic_fetch_add(&g_mouse_dx, 3);
+                                  atomic_fetch_add(&g_mouse_dy, 2); }
+                    if (ph == 60) atomic_fetch_or(&g_mouse_btn, 1u);
+                    if (ph == 70) atomic_fetch_and(&g_mouse_btn, ~1u);
+                }
+                /* AUTOSEQ="<frame>:<dik>,<frame>:<dik>,...": press a key once
+                 * at the given frame (for 10 frames).  AUTOKEY presses all
+                 * the time; walking the menus to reach a given scene needed
+                 * a scriptable sequence. */
+                /* AUTOSEQ="<frame>:<dik>[:<dur>],...": hold the key for <dur>
+                 * frames from that frame on (default 8).  The duration was
+                 * needed: without driving the car we cannot see the
+                 * headlights hit the surface. */
+                { enum { SQMAX = 64 };
+                  static int sqinit = 0; static long sqf[SQMAX], sqd[SQMAX];
+                  static unsigned char sqk[SQMAX]; static int sqn = 0;
+                  if (!sqinit){ sqinit = 1;
+                    const char *e = ENVC("AUTOSEQ");
+                    const char *q = e;
+                    for (; q && *q && sqn < SQMAX; ){
+                        while (*q==',' || *q==' ') q++;
+                        if (!*q) break;
+                        sqf[sqn] = strtol(q, 0, 0);
+                        const char *c2 = strchr(q, ':');
+                        if (!c2) break;
+                        sqk[sqn] = (unsigned char)strtoul(c2+1, 0, 0);
+                        const char *c3 = strchr(c2+1, ':');
+                        const char *comma = strchr(q, ',');
+                        sqd[sqn] = (c3 && (!comma || c3 < comma)) ? strtol(c3+1, 0, 0) : 8;
+                        if (sqd[sqn] < 1) sqd[sqn] = 8;
+                        sqn++;
+                        while (*q && *q != ',') q++;
+                    }
+                    /* do not truncate SILENTLY past the limit (in one test the
+                     * trailing Enters were lost and the game seemed "stuck") */
+                    while (q && (*q == ',' || *q == ' ')) q++;
+                    if (q && *q) fprintf(stderr, "app: WARNING AUTOSEQ cut at %d entries, the rest ignored\n", SQMAX);
+                  }
+                  if (sqn){
+                    long f = atomic_load(&g_frames_drawn);
+                    for (int q = 0; q < sqn; q++){
+                        int on = (f >= sqf[q] && f < sqf[q] + sqd[q]);
+                        if (on || f == sqf[q] + sqd[q])
+                            kbd_set_key(KSRC_LEGACY, sqk[q], on);
+                    }
+                  }
+                }
+                { static int akinit = 0; static unsigned char akk[64]; static int akn = 0;
+                  if (!akinit){ akinit = 1;
+                    const char *e = ENVC("AUTOKEY");
+                    for (const char *q = e; q && *q && akn < 64; ){
+                        while (*q==',' || *q==' ') q++;
+                        if (!*q) break;
+                        akk[akn++] = (unsigned char)strtoul(q, 0, 0);
+                        while (*q && *q != ',') q++;
+                    }
+                  }
+                  /* AUTOKEYSTOP=<frame>: stop pressing after this frame.
+                   * With AUTOKEY pressing Enter all the time the pre-race
+                   * CUTSCENE was skipped; this was needed to see it. */
+                  { static long akstop = -2;
+                    if (akstop == -2){ const char *e = ENVC("AUTOKEYSTOP");
+                        akstop = (e && *e) ? strtol(e, 0, 0) : -1; }
+                    if (akn){
+                      long f = atomic_load(&g_frames_drawn);
+                      if (akstop >= 0 && f > akstop){
+                          for (int q = 0; q < akn; q++) kbd_set_key(KSRC_LEGACY, akk[q], 0);
+                      } else {
+                          int slot = (int)((f / 30) % akn);
+                          int on = (f % 30) < 10;
+                          for (int q = 0; q < akn; q++)
+                              kbd_set_key(KSRC_LEGACY, akk[q], on && q == slot);
+                      }
+                    } }
+                }
+                render_ready_frame();
                 /* SLEEP until a frame is ready (no polling).  The 4 ms
                  * cap is only there to drain the NSEvent queue: when a
                  * frame arrives, cond_signal wakes us at once. */
@@ -6295,6 +6386,12 @@ void metal_run_main_loop(void){
                 atomic_load(&g_frames_drawn));
     }
 }
+#else
+void metal_run_main_loop(void){
+    // UIKit and CADisplayLink drive the loop on iOS
+}
+#endif
+
 
 /* Frame budget report: GPU busy time, CPU encoding time, pass/draw counts.
  * "What are we spending the hardware on" can only be answered with these

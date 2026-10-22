@@ -134,18 +134,13 @@ static void *guest_main_thread(void *unused){
     return 0;
 }
 
-int main(int argc,char**argv){
-    /* Running from the .app (runtime/bundle.m): settings.ini, the log file,
-     * run.sh's defaults, registry and save overlay, and the game folder
-     * (read-only, SPEED2.EXE build checked).  None of it applies to a
-     * terminal run of out/nfsu2_boot. */
-    const char *exe = (argc > 1 && strncmp(argv[1], "-psn_", 5)) ? argv[1] : NULL;
-    int remember = 0;                    /* NFSU2 --game-folder <dir>: save it */
-    if (exe && !strcmp(exe, "--game-folder")){ exe = argc > 2 ? argv[2] : NULL; remember = 1; }
+#include <TargetConditionals.h>
+int nfsu2_boot_game(void){
+    const char *exe = NULL;
     if (app_is_bundled()) app_setup();
     { extern void autotest_early(void); autotest_early(); }   /* NFSU2_LOG, NFSU2_TIMEOUT */
     if (app_is_bundled()){
-        exe = app_find_game(exe, remember);
+        exe = app_find_game(exe, 0);
         if (!exe){ app_no_game(); return 1; }
     }
     if (!exe) exe = "SPEED2.EXE";
@@ -245,3 +240,18 @@ int main(int argc,char**argv){
     all_reports();
     return 0;
 }
+
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+int main(int argc, char **argv){
+    @autoreleasepool {
+        return UIApplicationMain(argc, argv, nil, @"NfsuAppDelegate");
+    }
+}
+#else
+int main(int argc, char **argv){
+    (void)argc; (void)argv;
+    return nfsu2_boot_game();
+}
+#endif
+

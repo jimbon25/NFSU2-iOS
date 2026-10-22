@@ -520,6 +520,15 @@ fail:
  * restarted if it is no longer running, or rebuilt if that fails.  The
  * mixer state (g_snd) is untouched; playback just continues on the new
  * device.  autotest "audioreset" forces the rebuild path. */
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <AVFoundation/AVFoundation.h>
+static void watch_default_device(void){
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:nil];
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+}
+void audio_device_changed(const char *why){ (void)why; }
+#else
 #define AUDIO_ELEM_MAIN 0     /* kAudioObjectPropertyElementMain (macOS 12+) */
 static AudioStreamBasicDescription g_fmt;
 static dispatch_queue_t g_audio_q;
@@ -601,6 +610,7 @@ static void watch_default_device(void){
             audio_device_changed("system default changed"); });
     log_default_device("at start");
 }
+#endif
 
 /* No sound device (settings.ini "sound = off", NOSOUND=1, or no output unit
  * could be opened): a thread plays the mixer into nothing at the device's

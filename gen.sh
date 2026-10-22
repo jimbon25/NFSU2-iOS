@@ -12,7 +12,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 EXE="${1:-${NFSU2_DATA:+$NFSU2_DATA/SPEED2.EXE}}"
 [ -f "$EXE" ] || { echo "usage: ./gen.sh path/to/SPEED2.EXE"; exit 1; }
-PY="$ROOT/.venv/bin/python"
+PY="${PYTHON:-python3}"
+[ -x "$ROOT/.venv/bin/python" ] && PY="$ROOT/.venv/bin/python"
 # no stamp until this run has finished; web/gen.sh's label is for its own runs only
 mkdir -p gen/all
 rm -f gen/all/web-lift.txt

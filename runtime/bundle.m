@@ -19,7 +19,12 @@
  * fileio_set_readonly_root(1) makes the file layer refuse any write into it.
  * SPEED2.EXE must be the build the code was lifted from (v1.2 NA, SHA-256
  * below); any other build is refused.                                    */
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#else
 #import <Cocoa/Cocoa.h>
+#endif
 #import <CommonCrypto/CommonDigest.h>
 #include <string.h>
 #include <strings.h>
@@ -51,6 +56,9 @@ static int  g_bundled = -1;
 /* Are we running from a bundle?  We look at the real path with symbolic
  * links resolved: yes if it is ".../X.app/Contents/MacOS/Y".            */
 int app_is_bundled(void){
+#if TARGET_OS_IPHONE
+    return 1;
+#else
     if (g_bundled >= 0) return g_bundled;
     char raw[1024]; uint32_t n = sizeof raw;
     if (_NSGetExecutablePath(raw, &n) != 0){ g_bundled = 0; return 0; }
@@ -71,6 +79,7 @@ int app_is_bundled(void){
     s = strrchr(g_app_dir, '/'); if (s) *s = 0;
     g_bundled = 1;
     return 1;
+#endif
 }
 
 static void mkdirs(const char *path){
@@ -87,6 +96,7 @@ static int no_ui(void){
 }
 static void app_alert(const char *title, const char *msg){
     fprintf(stderr, "app: %s -- %s\n", title, msg);
+#if !TARGET_OS_IPHONE
     if (no_ui()) return;
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -96,6 +106,7 @@ static void app_alert(const char *title, const char *msg){
     [a setInformativeText:@(msg)];
     [a addButtonWithTitle:@"OK"];
     [a runModal];
+#endif
 }
 
 /* winsock.c, once per run, when nothing sent beyond this Mac has worked
@@ -115,6 +126,7 @@ void app_local_network_notice(void){
         return;
     }
     fprintf(stderr, "app: Local Network notice shown: %s\n", t);
+#if !TARGET_OS_IPHONE
     NSString *ts = @(t), *ms = @(m);
     dispatch_async(dispatch_get_main_queue(), ^{
         NSAlert *a = [NSAlert new];
@@ -133,6 +145,7 @@ void app_local_network_notice(void){
         if (w) [a beginSheetModalForWindow:w completionHandler:done];
         else done([a runModal]);
     });
+#endif
 }
 
 /* ---- settings.ini ------------------------------------------------------- *
@@ -850,8 +863,19 @@ static void app_set_defaults(void){
 /* Save overlay for the file layer (boot.c): NFSU2_SAVEDIR, which app_setup
  * points at Overlay/ and tools/autorun.sh at a per-run directory. */
 const char *app_save_dir(void){
+#if TARGET_OS_IPHONE
+    static char s_doc[1200];
+    if (!s_doc[0]){
+        NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString *doc = [paths.firstObject stringByAppendingPathComponent:@"nfsu2"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:doc withIntermediateDirectories:YES attributes:nil error:nil];
+        snprintf(s_doc, sizeof(s_doc), "%s", doc.UTF8String);
+    }
+    return s_doc;
+#else
     const char *env = getenv("NFSU2_SAVEDIR");
     return (env && *env) ? env : NULL;
+#endif
 }
 
 static int copy_small(const char *a, const char *b){
@@ -886,6 +910,13 @@ static void app_seed_registry(const char *reg){
 
 /* Called first thing in main() when bundled. */
 void app_setup(void){
+#if TARGET_OS_IPHONE
+    const char *sd = app_save_dir();
+    snprintf(g_support, sizeof g_support, "%s", sd);
+    setenv("NFSU2_SAVEDIR", sd, 1);
+    setenv("NFSU2_DATA", sd, 0);
+    app_set_defaults();
+#else
     const char *as = getenv("NFSU2_APPSUPPORT"), *home = getenv("HOME");
     if (as && *as) snprintf(g_support, sizeof g_support, "%s", as);
     else snprintf(g_support, sizeof g_support, "%s/Library/Application Support/NFSU2", home ? home : "/tmp");
@@ -911,6 +942,7 @@ void app_setup(void){
      * wherever Finder started us, let alone the game folder. */
     if (!getcwd(g_start_cwd, sizeof g_start_cwd)) g_start_cwd[0] = 0;
     if (chdir(g_support) != 0) fprintf(stderr, "app: chdir %s: %s\n", g_support, strerror(errno));
+#endif
 }
 
 /* ---- the game folder ---------------------------------------------------- */
@@ -969,6 +1001,7 @@ static int exe_ok(const char *exe, char *why, size_t wsz){
     return 0;
 }
 
+#if !TARGET_OS_IPHONE
 /* Ask for the game folder.  0 = cancelled. */
 static int app_ask(char *out, size_t osz, const char *msg){
     NSOpenPanel *op = [NSOpenPanel openPanel];
@@ -982,6 +1015,7 @@ static int app_ask(char *out, size_t osz, const char *msg){
     snprintf(out, osz, "%s", [[[op URL] path] UTF8String]);
     return 1;
 }
+#endif
 
 /* Find SPEED2.EXE: the command-line path (arg), else NFSU2_DATA
  * (environment or settings.ini game_folder), else ask with a folder picker
@@ -989,6 +1023,20 @@ static int app_ask(char *out, size_t osz, const char *msg){
  * "NFSU2 --game-folder <dir>").  The folder must contain the v1.2 NA
  * executable.  NULL = give up.                                            */
 const char *app_find_game(const char *arg, int remember){
+#if TARGET_OS_IPHONE
+    (void)arg; (void)remember;
+    static char found[1200];
+    const char *sd = app_save_dir();
+    snprintf(found, sizeof found, "%s/SPEED2.EXE", sd);
+    if (access(found, R_OK) == 0) return found;
+
+    NSString *res = [[NSBundle mainBundle] pathForResource:@"SPEED2" ofType:@"EXE"];
+    if (res && access(res.UTF8String, R_OK) == 0){
+        snprintf(found, sizeof found, "%s", res.UTF8String);
+        return found;
+    }
+    return found;
+#else
     static char found[1200];
     char dir[1200], why[600], absd[1200]; why[0] = 0;
     const char *env = (arg && *arg) ? arg : getenv("NFSU2_DATA");
@@ -1034,6 +1082,7 @@ const char *app_find_game(const char *arg, int remember){
         return found;
     }
     return NULL;
+#endif
 }
 
 /* When quitting without a game found, tell the user why. */

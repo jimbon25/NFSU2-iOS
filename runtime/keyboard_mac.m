@@ -29,6 +29,16 @@
  * NFSU2_KEYLAYOUT=<input source id> (test): use that keyboard layout (for
  * example com.apple.keylayout.German) instead of the one selected in macOS,
  * for characters, key names and the ns* script commands. */
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#include "kbd.h"
+#include <stddef.h>
+
+const char *kbdmac_layout_name(unsigned dik){ (void)dik; return NULL; }
+int  kbdmac_synth_key(int type, const char *key){ (void)type; (void)key; return 0; }
+int  kbdmac_synth_char(int type, uint32_t unicode){ (void)type; (void)unicode; return 0; }
+void kbdmac_synth_simple(int type, double a, double b){ (void)type; (void)a; (void)b; }
+#else
 #import <Cocoa/Cocoa.h>
 #import <Carbon/Carbon.h>
 #include <pthread.h>
@@ -679,3 +689,5 @@ void kbdmac_tick(void){
         }
     }
 }
+#endif
+

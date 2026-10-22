@@ -1,3 +1,34 @@
+# Need for Speed: Underground 2 - Native iOS Port
+
+Native ARM64 iOS port of the legendary PC game *Need for Speed: Underground 2* (2004) powered by Apple Metal API, CoreAudio, and C99 static recompilation. 
+
+> Not affiliated with or endorsed by Electronic Arts. This repository contains none of the game's copyrighted code or asset files.
+
+---
+
+### Features & Highlights
+
+- **Native Metal 60 FPS:** Direct translation of D3D9 rendering calls to Apple Metal command buffers (`MTLRenderCommandEncoder`). Runs smoothly with zero emulation overhead.
+- **On-Screen Touch Controls:** Virtual HUD buttons for Left/Right Steering, Gas, Brake/Reverse, NOS, Handbrake, Pause (ESC), and Enter.
+- **MFi & Physical Gamepad Support:** Full integration with Apple `GameController.framework`. Supports Xbox Wireless Controllers, PlayStation DualSense / DualShock, and MFi gamepads. On-screen touch overlay automatically hides when a physical controller is connected.
+- **Sandbox Documents Integration:** Game data and saves live in iOS Sandbox Documents (`On My iPhone/NFSU2/`). You can freely transfer PC game assets, save files, and custom mods via the iOS **Files** app.
+- **Career Money Mod:** Instant `$99,999,999` career bank grant via on-screen `$$ MAX` cheat button.
+- **Automated CI Build:** Compiles natively via GitHub Actions runner `macos-15` (Apple Silicon) with zero local compilation required.
+
+---
+
+### Quick Start & Installation
+
+1. **Download IPA:** Grab the latest `NFSU2-iOS.ipa` from the [Releases](https://github.com/jimbon25/NFSU2-iOS/releases) or Actions build artifacts.
+2. **Sideload:** Install the `.ipa` onto your iPhone or iPad using **TrollStore**, **AltStore**, **SideStore**, **KSign**, or **ESign**.
+3. **Copy PC Game Assets:**
+   - Open the **Files** app on your iOS device.
+   - Go to `On My iPhone` > `NFSU2`.
+   - Copy the game data folders from your PC installation (`CARS`, `TRACKS`, `GLOBAL`, `SOUND`, `MOVIES`, `LANGUAGES`) and `SPEED2.EXE` (v1.2 US) into this directory.
+4. Launch **NFS Underground 2** and enjoy!
+
+---
+
 # Need for Speed: Underground 2 in the browser
 
 A fan project that runs the PC game *Need for Speed: Underground 2* (2004) in Google Chrome and Firefox. The game's

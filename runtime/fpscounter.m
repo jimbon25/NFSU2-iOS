@@ -27,7 +27,12 @@
  * timestamps are kept while the counter is off too (two ring writes per
  * frame), so the first reading after Cmd-N covers the last second instead of
  * an empty or stale window.                                                */
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#import <UIKit/UIKit.h>
+#else
 #import <Cocoa/Cocoa.h>
+#endif
 #import <Metal/Metal.h>
 #include <os/lock.h>
 #include <stdatomic.h>
@@ -166,6 +171,29 @@ static id<MTLTexture> g_tex; static NSUInteger g_tw, g_th;
 static CGFloat g_gx, g_gy, g_gw, g_gh;     /* graph rect inside the panel, pixels from top-left */
 static void render_panel(NSString *str, double ppp){
     CGFloat fs = 12.0 * ppp, lh = ceil(fs * 1.3), pad = ceil(6 * ppp), gh = ceil(24 * ppp), gap = ceil(4 * ppp);
+#if TARGET_OS_IPHONE
+    UIFont *font = [UIFont monospacedDigitSystemFontOfSize:fs weight:UIFontWeightSemibold];
+    NSDictionary *at = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [UIColor whiteColor] };
+    NSArray<NSString *> *lines = [str componentsSeparatedByString:@"\n"];
+    CGFloat tw = ceil(150 * ppp);
+    for (NSString *l in lines){ CGSize z = [l sizeWithAttributes:at]; if (z.width > tw) tw = ceil(z.width); }
+    size_t W = ((size_t)(tw + 2 * pad) + 3) & ~(size_t)3;
+    size_t H = (size_t)(pad + lh * lines.count + gap + gh + pad);
+    void *buf = calloc(W * H, 4);
+    if (!buf) return;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef cg = CGBitmapContextCreate(buf, W, H, 8, W * 4, cs,
+                                            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGContextSetRGBFillColor(cg, 0, 0, 0, 0.62);
+    CGPathRef p = CGPathCreateWithRoundedRect(CGRectMake(0, 0, W, H), 5 * ppp, 5 * ppp, NULL);
+    CGContextAddPath(cg, p); CGContextFillPath(cg); CGPathRelease(p);
+    CGContextSetRGBFillColor(cg, 0, 0, 0, 0.35);
+    CGContextFillRect(cg, CGRectMake(pad, pad, W - 2 * pad, gh));
+    UIGraphicsPushContext(cg);
+    for (NSUInteger i = 0; i < lines.count; i++)
+        [lines[i] drawAtPoint:CGPointMake(pad, (CGFloat)H - pad - lh * (i + 1) + (lh - fs) * 0.35) withAttributes:at];
+    UIGraphicsPopContext();
+#else
     NSFont *font = [NSFont monospacedDigitSystemFontOfSize:fs weight:NSFontWeightSemibold];
     NSDictionary *at = @{ NSFontAttributeName: font, NSForegroundColorAttributeName: [NSColor whiteColor] };
     NSArray<NSString *> *lines = [str componentsSeparatedByString:@"\n"];
@@ -189,6 +217,7 @@ static void render_panel(NSString *str, double ppp){
     for (NSUInteger i = 0; i < lines.count; i++)
         [lines[i] drawAtPoint:NSMakePoint(pad, (CGFloat)H - pad - lh * (i + 1) + (lh - fs) * 0.35) withAttributes:at];
     [NSGraphicsContext restoreGraphicsState];
+#endif
     /* a new texture for every update: frames still on the GPU keep sampling
      * the previous one (the command buffers retain it), so no frame shows a
      * half-written panel */
@@ -354,6 +383,7 @@ void fpscounter_draw(id<MTLCommandBuffer> cb, id<MTLTexture> dst, double px_per_
     [e endEncoding];
 }
 
+#if !TARGET_OS_IPHONE
 /* app menu item: Cmd-N.  Command shortcuts never reach the game, and N is
  * bound to nothing in the game's race or front-end key tables (unlike Shift,
  * Control and Option, which are gear and nitrous keys and reach the game when
@@ -375,3 +405,4 @@ void fpscounter_add_menu(NSMenu *m){
     [it setKeyEquivalentModifierMask:NSEventModifierFlagCommand];
     [it setTarget:g_target];
 }
+#endif

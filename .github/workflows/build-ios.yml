@@ -1,0 +1,73 @@
+name: Build iOS IPA (Native Metal)
+
+on:
+  push:
+    branches: [main, feat/*]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    name: Build Native iOS IPA (macOS-15)
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          pip install pefile capstone
+
+      - name: Download SPEED2.EXE & server.dll (Smart Range Request)
+        run: |
+          python3 tools/fetch_exe.py
+
+      - name: Generate Lifted C Code (gen.sh)
+        run: |
+          chmod +x gen.sh tools/genstamp.sh
+          ./gen.sh SPEED2.EXE
+
+      - name: Compile and Package iOS IPA
+        run: |
+          chmod +x tools/build_ios.sh
+          ./tools/build_ios.sh
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NFSU2-iOS-ipa
+          path: out/NFSU2-iOS.ipa
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/NFSU2-iOS.ipa
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          body: |
+            ## Need for Speed: Underground 2 - Native iOS Port
+            
+            Native ARM64 port for iOS powered by Apple Metal API and C99 static recompilation.
+            
+            ### Features
+            - **Native Metal Rendering:** Direct D3D9 -> Metal translation (60 FPS locked).
+            - **Virtual Touch Controls:** Steering, Throttle, Brake/Reverse, NOS, Handbrake, Pause, Enter.
+            - **Apple GameController:** Native support for MFi, Xbox, and PlayStation controllers (touch overlay auto-hides when connected).
+            - **Career Cash Mod:** Built-in `$99,999,999` career grant button.
+            - **Files App Integration:** Place your PC game assets (`CARS`, `TRACKS`, `GLOBAL`, etc.) directly into `On My iPhone / NFSU2 /`.
+            - **Sideload Ready:** Ad-hoc signed `.ipa` compatible with TrollStore, AltStore, SideStore, ESign, and KSign.
