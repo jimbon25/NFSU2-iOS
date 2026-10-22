@@ -20,9 +20,9 @@ CFLAGS="-O3 -target $TARGET -isysroot $SDK_PATH -miphoneos-version-min=$MIN_IOS 
 
 LDFLAGS="-target $TARGET -isysroot $SDK_PATH -miphoneos-version-min=$MIN_IOS"
 
-FRAMEWORKS="-lm -framework UIKit -framework Metal -framework QuartzCore \
+FRAMEWORKS="-lm -framework Foundation -framework CoreFoundation -framework UIKit -framework Metal -framework QuartzCore \
   -framework ImageIO -framework CoreGraphics -framework AudioToolbox \
-  -framework CoreAudio -framework GameController -framework AVFoundation"
+  -framework CoreAudio -framework GameController -framework AVFoundation -lobjc"
 
 mkdir -p "$ROOT/out/obj_ios" "$ROOT/out/obj_ios/srv"
 
