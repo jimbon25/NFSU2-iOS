@@ -40,6 +40,7 @@ NSWindow *metal_nswindow(void){ return g_win; }          /* keyboard_mac.m */
 #import <CoreServices/CoreServices.h>
 #endif
 
+static id<MTLDevice>    g_dev;
 static CAMetalLayer    *g_layer;
 void metal_set_layer(CAMetalLayer *layer){
     g_layer = layer;
@@ -143,7 +144,6 @@ static void dump_texture(id<MTLTexture> t, long frame){
     }
     CGColorSpaceRelease(cs); free(buf);
 }
-static id<MTLDevice>    g_dev;
 static id<MTLCommandQueue> g_queue;
 
 /* Frame state written by the guest thread, read by the main thread */
@@ -290,6 +290,11 @@ static void mouse_delta_scale(double *sx, double *sy){
 /* --- keyboard: runtime/keyboard_mac.m (NSEvent -> Win32 messages and
  * DirectInput state), runtime/keyboard.c (shared key state, host messages) */
 #include "kbd.h"
+#if TARGET_OS_IPHONE
+static void mouse_release_all(void){
+    atomic_store(&g_mouse_btn, 0u);
+}
+#else
 int  kbdmac_handle(NSEvent *ev);
 void kbdmac_tick(void);
 void kbdmac_release_all(const char *why);
@@ -317,6 +322,7 @@ static void mouse_release_all(void){
     for (int b = 0; b < 8; b++) mouse_button(b, 0, 0);
     atomic_store(&g_mouse_btn, 0u);
 }
+#endif
 /* Textures are created BEFORE the window opens.  So the "available"
  * criterion is the device, not the layer; otherwise early textures were
  * silently lost. */
@@ -4487,11 +4493,15 @@ static int fs_pref_load(void){
 void lifecycle_request_quit(const char *why);
 void lifecycle_set_active(int on, const char *why);
 void lifecycle_tick(void);
+#if TARGET_OS_IPHONE
+static void cursor_hide_if_inside(void){ }
+#else
 static void cursor_hide_if_inside(void){
     if (!g_win || ![NSApp isActive]) return;
     NSPoint p = [g_win mouseLocationOutsideOfEventStream];
     cursor_hide_update([g_win isKeyWindow] && NSPointInRect(p, [[g_win contentView] frame]));
 }
+#endif
 /* Vsync clock for the frame pacer (framerate.c).  A CADisplayLink on the
  * game view reports every refresh's timestamp (CACurrentMediaTime, i.e.
  * mach_absolute_time) and follows the window to other screens.  The pacer

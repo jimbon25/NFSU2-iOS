@@ -563,7 +563,7 @@ int winsock_lan_identity(NetIdent *id, char *why, size_t whysz){
     } else snprintf(why, whysz, "no LAN interface with an IPv4 address%s%s",
                     have_dflt ? "; default route via " : "", have_dflt ? dflt : "");
     if (!(id->mac[0] | id->mac[1] | id->mac[2] | id->mac[3] | id->mac[4] | id->mac[5])){
-#ifdef __wasm__
+#if defined(__wasm__) || TARGET_OS_IPHONE
         uint64_t hsh = 0;
         { char hn[256] = ""; gethostname(hn, sizeof hn); hsh = fnv(hn, strlen(hn), fnv("NFSU2-MAC", 9, 0)); }
 #else

@@ -7,9 +7,12 @@
  *
  * The mixer converts to 44.1 kHz, 2 channel, 16-bit output; the source
  * buffers can differ in rate/channels (nearest-neighbour resampling). */
+#include <TargetConditionals.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AudioUnit.h>
+#if !TARGET_OS_IPHONE
 #import <CoreAudio/CoreAudio.h>
+#endif
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
