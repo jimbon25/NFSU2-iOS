@@ -146,7 +146,14 @@ int nfsu2_boot_game(void){
     if (!exe) exe = "SPEED2.EXE";
 
     mem_init(); mem_fault_handler_install();
-    if(mem_load_pe(exe)) return 1;
+    if(mem_load_pe(exe)){
+        fprintf(stderr, "boot: mem_load_pe failed for %s\n", exe);
+#if TARGET_OS_IPHONE
+        extern void app_alert(const char*, const char*);
+        app_alert("SPEED2.EXE Error", "Gagal membaca SPEED2.EXE. Pastikan file SPEED2.EXE cocok dengan versi 1.2 US (4.800.512 bytes).");
+#endif
+        return 1;
+    }
     mem_commit(TEB_BASE,0x20000);
     mem_commit(STACK_LO, STACK_HI-STACK_LO);
     fileio_set_root(exe);
@@ -202,12 +209,18 @@ int nfsu2_boot_game(void){
     fprintf(stderr,"\n=== RUNNING THE ENTRY POINT: 0x0075bcc7 ===\n");
     fprintf(stderr,"    TEB=0x%08x  stack=0x%08x..0x%08x  esp=0x%08x\n\n",
             TEB_BASE,STACK_LO,STACK_HI,cpu.esp);
+#if !TARGET_OS_IPHONE
     { unsigned a = getenv("ALARM") ? (unsigned)atoi(getenv("ALARM")) : 20u;
       if (a) { signal(SIGALRM,on_alarm); alarm(a); } }
+#endif
     {   /* Run the guest on a thread with a LARGE stack: the lifted code
          * carries the guest call chain on the host C stack.                  */
         pthread_attr_t at; pthread_attr_init(&at);
+#if TARGET_OS_IPHONE
+        pthread_attr_setstacksize(&at, 16ull*1024ull*1024ull);   /* 16 MB stack on iOS */
+#else
         pthread_attr_setstacksize(&at, 1024ull*1024ull*1024ull);   /* 1 GB */
+#endif
         /* Put the guest thread at the HIGHEST QoS explicitly: all of the
          * frame production is here.  The default QoS is inherited, and it
          * dropped to background with the window not in front -> efficiency core. */
@@ -217,9 +230,16 @@ int nfsu2_boot_game(void){
             pthread_t sth; pthread_create(&sth,0,sampler_main,0); pthread_detach(sth); }
         /* Set up the Metal device BEFORE the guest starts: the game creates its
          * first textures before the window opens; with no device they silently vanish. */
-        if (getenv("WINDOW")){ extern void metal_early_init(void); metal_early_init(); }
+        { extern void metal_early_init(void); metal_early_init(); }
         if (pthread_create(&th,&at,guest_main_thread,0)!=0){
-            fprintf(stderr,"the guest main thread could not be created\n"); return 1; }
+            fprintf(stderr,"the guest main thread could not be created\n");
+#if TARGET_OS_IPHONE
+            extern void app_alert(const char*, const char*);
+            app_alert("Thread Error", "Gagal mengalokasikan thread utama game.");
+#endif
+            return 1;
+        }
+#if !TARGET_OS_IPHONE
         if (getenv("WINDOW")){
             /* macOS: the window must be on the MAIN thread; the guest has its own thread already */
             extern void metal_run_main_loop(void);
@@ -227,6 +247,9 @@ int nfsu2_boot_game(void){
         } else {
             pthread_join(th,0);
         }
+#else
+        pthread_join(th,0);
+#endif
     }
     /* Other guest threads (the memcard/save worker) may still be writing:
      * let open save files be closed, then stop all guest code for good

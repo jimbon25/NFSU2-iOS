@@ -96,7 +96,25 @@ static int no_ui(void){
 }
 static void app_alert(const char *title, const char *msg){
     fprintf(stderr, "app: %s -- %s\n", title, msg);
-#if !TARGET_OS_IPHONE
+#if TARGET_OS_IPHONE
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *win = [UIApplication sharedApplication].keyWindow;
+        if (!win && [UIApplication sharedApplication].windows.count > 0) {
+            win = [UIApplication sharedApplication].windows.firstObject;
+        }
+        UIViewController *vc = win.rootViewController;
+        while (vc.presentedViewController) {
+            vc = vc.presentedViewController;
+        }
+        if (vc) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@(title)
+                                                                           message:@(msg)
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [vc presentViewController:alert animated:YES completion:nil];
+        }
+    });
+#else
     if (no_ui()) return;
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -915,6 +933,19 @@ void app_setup(void){
     snprintf(g_support, sizeof g_support, "%s", sd);
     setenv("NFSU2_SAVEDIR", sd, 1);
     setenv("NFSU2_DATA", sd, 0);
+
+    /* Redirect stderr to Documents/nfsu2/nfsu2_log.txt for user debugging */
+    char logf[1200];
+    snprintf(logf, sizeof logf, "%s/nfsu2_log.txt", sd);
+    freopen(logf, "w", stderr);
+    setbuf(stderr, NULL);
+    fprintf(stderr, "=== NFSU2 iOS Logging Initialized ===\n");
+
+    snprintf(g_res_dir, sizeof g_res_dir, "%s", [NSBundle mainBundle].resourcePath.UTF8String);
+    char p[1200];
+    snprintf(p, sizeof p, "%s/registry.txt", g_support);
+    setenv("NFSU2_REGFILE", p, 1);
+    app_seed_registry(p);
     app_set_defaults();
 #else
     const char *as = getenv("NFSU2_APPSUPPORT"), *home = getenv("HOME");
@@ -1026,16 +1057,51 @@ const char *app_find_game(const char *arg, int remember){
 #if TARGET_OS_IPHONE
     (void)arg; (void)remember;
     static char found[1200];
-    const char *sd = app_save_dir();
-    snprintf(found, sizeof found, "%s/SPEED2.EXE", sd);
-    if (access(found, R_OK) == 0) return found;
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *doc = paths.firstObject;
+    NSFileManager *fm = [NSFileManager defaultManager];
 
-    NSString *res = [[NSBundle mainBundle] pathForResource:@"SPEED2" ofType:@"EXE"];
-    if (res && access(res.UTF8String, R_OK) == 0){
-        snprintf(found, sizeof found, "%s", res.UTF8String);
+    const char *candidates[4];
+    int ncand = 0;
+    const char *sd = app_save_dir();
+    if (sd && *sd) candidates[ncand++] = sd;
+    if (doc) candidates[ncand++] = doc.UTF8String;
+    NSString *doc_nfsu2 = [doc stringByAppendingPathComponent:@"NFSU2"];
+    if (doc_nfsu2) candidates[ncand++] = doc_nfsu2.UTF8String;
+    NSString *doc_nfsu2_sub = [doc stringByAppendingPathComponent:@"nfsu2/NFSU2"];
+    if (doc_nfsu2_sub) candidates[ncand++] = doc_nfsu2_sub.UTF8String;
+
+    for (int i = 0; i < ncand; i++) {
+        if (find_under(candidates[i], found, sizeof found, 3)) {
+            char keep[1200]; snprintf(keep, sizeof keep, "%s", found);
+            char *s = strrchr(keep, '/'); if (s) *s = 0;
+            snprintf(s_doc, sizeof s_doc, "%s", keep);
+            fprintf(stderr, "app: found game executable: %s in %s\n", found, s_doc);
+            return found;
+        }
+    }
+
+    /* If user copied asset folders (GLOBAL) but missed SPEED2.EXE, auto-copy from bundle if available */
+    NSString *bundle_exe = [[NSBundle mainBundle] pathForResource:@"SPEED2" ofType:@"EXE"];
+    if (!bundle_exe) bundle_exe = [[NSBundle mainBundle] pathForResource:@"speed2" ofType:@"exe"];
+    if (bundle_exe) {
+        for (int i = 0; i < ncand; i++) {
+            NSString *d = @(candidates[i]);
+            if ([fm fileExistsAtPath:[d stringByAppendingPathComponent:@"GLOBAL"]] ||
+                [fm fileExistsAtPath:[d stringByAppendingPathComponent:@"global"]]) {
+                NSString *dst = [d stringByAppendingPathComponent:@"SPEED2.EXE"];
+                [fm copyItemAtPath:bundle_exe toPath:dst error:nil];
+                snprintf(found, sizeof found, "%s", dst.UTF8String);
+                snprintf(s_doc, sizeof s_doc, "%s", candidates[i]);
+                fprintf(stderr, "app: auto-copied bundle SPEED2.EXE to data folder: %s\n", found);
+                return found;
+            }
+        }
+        snprintf(found, sizeof found, "%s", bundle_exe.UTF8String);
         return found;
     }
-    return found;
+
+    return NULL;
 #else
     static char found[1200];
     char dir[1200], why[600], absd[1200]; why[0] = 0;
@@ -1087,8 +1153,14 @@ const char *app_find_game(const char *arg, int remember){
 
 /* When quitting without a game found, tell the user why. */
 void app_no_game(void){
+#if TARGET_OS_IPHONE
+    app_alert("Data Game Belum Ditemukan",
+              "File SPEED2.EXE dan folder data game (GLOBAL, CARS, TRACKS) belum ditemukan.\n\n"
+              "Silakan buka aplikasi File di iPhone -> Di iPhone Saya -> folder NFSU2 (atau nfsu2), lalu masukkan seluruh folder asset game PC ke situ.");
+#else
     app_alert("NFSU2 cannot start",
               "The game itself is not part of this app: it needs your own Need for Speed "
               "Underground 2 (v1.2) folder.  Open the app again to choose it, or set "
               "game_folder in ~/Library/Application Support/NFSU2/settings.ini.");
+#endif
 }

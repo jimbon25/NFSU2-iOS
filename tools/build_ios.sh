@@ -89,6 +89,8 @@ mkdir -p "$APP_DIR"
 
 cp "$ROOT/out/NFSU2" "$APP_DIR/NFSU2"
 chmod +x "$APP_DIR/NFSU2"
+[ -f "$ROOT/app/registry-defaults.txt" ] && cp "$ROOT/app/registry-defaults.txt" "$APP_DIR/registry-defaults.txt"
+[ -f "$ROOT/SPEED2.EXE" ] && cp "$ROOT/SPEED2.EXE" "$APP_DIR/SPEED2.EXE"
 
 # Generate Info.plist
 cat << 'EOF' > "$APP_DIR/Info.plist"

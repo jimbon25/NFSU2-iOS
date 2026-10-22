@@ -43,6 +43,17 @@ typedef struct {
     return self;
 }
 
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat s = [UIScreen mainScreen].scale;
+    self.metalLayer.contentsScale = s;
+    if (self.bounds.size.width > 0 && self.bounds.size.height > 0) {
+        if (self.metalLayer.drawableSize.width <= 0 || self.metalLayer.drawableSize.height <= 0) {
+            self.metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * s, self.bounds.size.height * s);
+        }
+    }
+}
+
 @end
 
 @implementation NfsuTouchOverlay {
@@ -300,6 +311,9 @@ typedef struct {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor blackColor];
+
+    extern void metal_early_init(void);
+    metal_early_init();
 
     self.metalView = [[NfsuMetalView alloc] initWithFrame:self.view.bounds];
     self.metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
