@@ -495,7 +495,11 @@ static int au_start(const AudioStreamBasicDescription *f){
     AudioComponentDescription d;
     memset(&d, 0, sizeof d);
     d.componentType         = kAudioUnitType_Output;
+#if TARGET_OS_IPHONE
+    d.componentSubType      = kAudioUnitSubType_RemoteIO;
+#else
     d.componentSubType      = kAudioUnitSubType_DefaultOutput;
+#endif
     d.componentManufacturer = kAudioUnitManufacturer_Apple;
     AudioComponent comp = AudioComponentFindNext(NULL, &d);
     if (!comp) return 0;
@@ -524,6 +528,8 @@ fail:
  * mixer state (g_snd) is untouched; playback just continues on the new
  * device.  autotest "audioreset" forces the rebuild path. */
 #include <TargetConditionals.h>
+static AudioStreamBasicDescription g_fmt;
+static uint64_t g_dev_changes = 0, g_au_restarts = 0, g_au_rebuilds = 0;
 #if TARGET_OS_IPHONE
 #import <AVFoundation/AVFoundation.h>
 static void watch_default_device(void){
@@ -533,9 +539,7 @@ static void watch_default_device(void){
 void audio_device_changed(const char *why){ (void)why; }
 #else
 #define AUDIO_ELEM_MAIN 0     /* kAudioObjectPropertyElementMain (macOS 12+) */
-static AudioStreamBasicDescription g_fmt;
 static dispatch_queue_t g_audio_q;
-static uint64_t g_dev_changes = 0, g_au_restarts = 0, g_au_rebuilds = 0;
 static void log_default_device(const char *why){
     AudioObjectPropertyAddress a = { kAudioHardwarePropertyDefaultOutputDevice,
                                      kAudioObjectPropertyScopeGlobal, AUDIO_ELEM_MAIN };
