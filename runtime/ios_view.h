@@ -28,6 +28,7 @@ extern "C" {
 
 void metal_set_layer(CAMetalLayer *layer);
 void metal_render_one_frame(void);
+void metal_ios_touch_point(float view_x, float view_y, float view_w, float view_h, int is_down, int is_move);
 void nfsu2_grant_career_cash(uint32_t amount);
 
 #ifdef __cplusplus

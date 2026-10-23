@@ -291,6 +291,54 @@ static void mouse_delta_scale(double *sx, double *sy){
  * DirectInput state), runtime/keyboard.c (shared key state, host messages) */
 #include "kbd.h"
 #if TARGET_OS_IPHONE
+void metal_ios_touch_point(float view_x, float view_y, float view_w, float view_h, int is_down, int is_move){
+    if (view_w <= 0.0f || view_h <= 0.0f) return;
+    double lw = atomic_load(&g_game_w), lh = atomic_load(&g_game_h);
+    if (lw < 1.0) lw = 1280.0;
+    if (lh < 1.0) lh = 960.0;
+
+    double a = atomic_load(&g_ui_asp) / 10000.0;
+    if (a <= 0.05 || a > 1.0) a = 1.0;
+    double b = atomic_load(&g_ui_asp_y) / 10000.0;
+    if (b <= 0.05 || b > 1.0) b = 1.0;
+
+    double ox = view_w * (1.0 - a) * 0.5;
+    double vw = view_w * a;
+    double oy = view_h * (1.0 - b) * 0.5;
+    double vh = view_h * b;
+
+    double gx = (view_x - ox) / vw * lw;
+    double gy = (view_y - oy) / vh * lh;
+    if (gx < 0.0) gx = 0.0; else if (gx > lw - 1.0) gx = lw - 1.0;
+    if (gy < 0.0) gy = 0.0; else if (gy > lh - 1.0) gy = lh - 1.0;
+
+    int cur_gx = (int)gx;
+    int cur_gy = (int)gy;
+    int prev_x = atomic_exchange(&g_mouse_x, cur_gx);
+    int prev_y = atomic_exchange(&g_mouse_y, cur_gy);
+
+    int dx = cur_gx - prev_x;
+    int dy = cur_gy - prev_y;
+    if (is_move && (dx || dy)){
+        atomic_fetch_add(&g_mouse_dx, dx);
+        atomic_fetch_add(&g_mouse_dy, dy);
+    }
+
+    uint32_t lp = ((uint32_t)(cur_gy & 0xFFFF) << 16) | (uint32_t)(cur_gx & 0xFFFF);
+    kbd_post_mousemove(is_down ? 0x0001u : 0u, lp);
+
+    if (!is_move){
+        unsigned bit = 1u;
+        unsigned was = atomic_load(&g_mouse_btn) & bit;
+        if (is_down) atomic_fetch_or(&g_mouse_btn, bit);
+        else atomic_fetch_and(&g_mouse_btn, ~bit);
+
+        if (!!was != !!is_down){
+            uint32_t msg = is_down ? 0x0201u /* WM_LBUTTONDOWN */ : 0x0202u /* WM_LBUTTONUP */;
+            kbd_post(msg, is_down ? 0x0001u : 0u, lp);
+        }
+    }
+}
 static void mouse_release_all(void){
     atomic_store(&g_mouse_btn, 0u);
 }
@@ -3550,10 +3598,15 @@ static void scr_cache(void){
         if (!sc) return;
         CGRect b = [sc bounds];
         CGFloat s = [sc scale];
-        atomic_store(&g_scr_cw, (int)b.size.width);
-        atomic_store(&g_scr_ch, (int)b.size.height);
+        CGFloat w = fmax(b.size.width, b.size.height);
+        CGFloat h = fmin(b.size.width, b.size.height);
+        atomic_store(&g_scr_cw, (int)w);
+        atomic_store(&g_scr_ch, (int)h);
         atomic_store(&g_scr_s100, (int)lround(s * 100.0));
         atomic_store(&g_scr_ppp1000, (int)lround(s * 1000.0));
+        atomic_store(&g_fs, 1);
+        atomic_store(&g_fs_pw, w * s);
+        atomic_store(&g_fs_ph, h * s);
         int hz = 60;
         if (sc.maximumFramesPerSecond > 0) hz = (int)sc.maximumFramesPerSecond;
         atomic_store(&g_display_hz, hz);
@@ -3761,6 +3814,22 @@ static void win_apply_size(unsigned w, unsigned h){
  * window has not been sized yet, the size it will get on first open.
  * Called from the guest thread, does not touch AppKit. */
 void metal_view_size(unsigned *ow, unsigned *oh){
+#if TARGET_OS_IPHONE
+    double sc = atomic_load(&g_scr_s100) / 100.0; if (sc < 1.0) sc = 1.0;
+    double w = atomic_load(&g_scr_cw) * sc;
+    double h = atomic_load(&g_scr_ch) * sc;
+    if (w < 320.0 || h < 240.0){
+        UIScreen *sc_ui = [UIScreen mainScreen];
+        if (sc_ui) {
+            CGRect b = [sc_ui bounds];
+            CGFloat s = [sc_ui scale];
+            w = fmax(b.size.width, b.size.height) * s;
+            h = fmin(b.size.width, b.size.height) * s;
+        }
+    }
+    if (w < 320.0 || h < 240.0){ *ow = *oh = 0; return; }
+    *ow = ((unsigned)lround(w)) & ~1u; *oh = ((unsigned)lround(h)) & ~1u;
+#else
     double sc = atomic_load(&g_scr_s100) / 100.0; if (sc < 1.0) sc = 1.0;
     double w = 0, h = 0;
     if (atomic_load(&g_fs) && atomic_load(&g_fs_pw) > 0){
@@ -3772,6 +3841,7 @@ void metal_view_size(unsigned *ow, unsigned *oh){
     }
     if (w < 320.0 || h < 240.0){ *ow = *oh = 0; return; }
     *ow = ((unsigned)lround(w)) & ~1u; *oh = ((unsigned)lround(h)) & ~1u;
+#endif
 }
 void metal_resize(unsigned w, unsigned h){
     if (!w || !h || w > 8192u || h > 8192u) return;
