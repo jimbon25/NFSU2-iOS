@@ -389,12 +389,19 @@ static void tr_init(void){
 #define FMT_DXT3 0x33545844u
 #define FMT_DXT5 0x35545844u
 static MTLPixelFormat d3d_pf(uint32_t f){
+#if TARGET_OS_IPHONE
+    switch (f){
+    case FMT_DXT1: case FMT_DXT3: case FMT_DXT5: return MTLPixelFormatRGBA8Unorm;
+    case 21: case 22: return MTLPixelFormatBGRA8Unorm;
+    }
+#else
     switch (f){
     case FMT_DXT1: return MTLPixelFormatBC1_RGBA;
     case FMT_DXT3: return MTLPixelFormatBC2_RGBA;
     case FMT_DXT5: return MTLPixelFormatBC3_RGBA;
     case 21: case 22: return MTLPixelFormatBGRA8Unorm;
     }
+#endif
     return MTLPixelFormatInvalid;
 }
 static const char *fmt_name(uint32_t f){

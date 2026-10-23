@@ -988,9 +988,15 @@ static MTLPixelFormat d3dfmt_to_mtl(unsigned f, unsigned *blk, unsigned *bpb){
     case 21: case 22: *blk=1; *bpb=4; return MTLPixelFormatBGRA8Unorm;   /* A8R8G8B8 */
     case 28: *blk=1; *bpb=1; return MTLPixelFormatA8Unorm;               /* A8 */
     case 41: *blk=1; *bpb=1; return MTLPixelFormatR8Unorm;               /* L8 */
+#if TARGET_OS_IPHONE
+    case 0x31545844: *blk=4; *bpb=8;  return MTLPixelFormatRGBA8Unorm;   /* DXT1 decompressed on upload */
+    case 0x33545844: *blk=4; *bpb=16; return MTLPixelFormatRGBA8Unorm;   /* DXT3 decompressed on upload */
+    case 0x35545844: *blk=4; *bpb=16; return MTLPixelFormatRGBA8Unorm;   /* DXT5 decompressed on upload */
+#else
     case 0x31545844: *blk=4; *bpb=8;  return MTLPixelFormatBC1_RGBA;     /* DXT1 */
     case 0x33545844: *blk=4; *bpb=16; return MTLPixelFormatBC2_RGBA;     /* DXT3 */
     case 0x35545844: *blk=4; *bpb=16; return MTLPixelFormatBC3_RGBA;     /* DXT5 */
+#endif
     default: *blk=0; *bpb=0; return MTLPixelFormatInvalid;
     }
 }
@@ -1011,8 +1017,13 @@ static void tex_zero_all(id<MTLTexture> t, unsigned w, unsigned h, unsigned leve
         unsigned lw = w >> lv, lh = h >> lv;
         if (!lw) lw = 1; if (!lh) lh = 1;
         size_t row, rows;
+#if TARGET_OS_IPHONE
+        row = (size_t)lw * (t.pixelFormat == MTLPixelFormatA8Unorm || t.pixelFormat == MTLPixelFormatR8Unorm ? 1 : 4);
+        rows = lh;
+#else
         if (!blk || blk == 1){ row = (size_t)lw * (bpb ? bpb : 4); rows = lh; }
         else { row = (size_t)((lw + blk - 1) / blk) * bpb; rows = (lh + blk - 1) / blk; }
+#endif
         void *zero = calloc(1, row * rows);
         if (!zero) return;
         for (unsigned f = 0; f < faces; f++)
@@ -3097,6 +3108,99 @@ _Static_assert(MAXTEX == TEXREP_MAXTEX, "texrep.h TEXREP_MAXTEX");
 id<MTLDevice> metal_device(void){ return g_dev; }
 id<MTLTexture> metal_tex_object(unsigned id_){ return (id_ && id_ < MAXTEX) ? g_tex[id_] : nil; }
 
+#if TARGET_OS_IPHONE
+static inline uint32_t dxt_rgb565_to_rgba8(uint16_t c, uint8_t a) {
+    uint32_t r = ((c >> 11) & 0x1F); r = (r * 255 + 15) / 31;
+    uint32_t g = ((c >> 5) & 0x3F);  g = (g * 255 + 31) / 63;
+    uint32_t b = (c & 0x1F);         b = (b * 255 + 15) / 31;
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
+}
+
+static inline uint32_t dxt_lerp_color(uint32_t c0, uint32_t c1, int w0, int w1, int div) {
+    uint32_t r0 = c0 & 0xFF, g0 = (c0 >> 8) & 0xFF, b0 = (c0 >> 16) & 0xFF;
+    uint32_t r1 = c1 & 0xFF, g1 = (c1 >> 8) & 0xFF, b1 = (c1 >> 16) & 0xFF;
+    uint32_t r = (r0 * w0 + r1 * w1) / div;
+    uint32_t g = (g0 * w0 + g1 * w1) / div;
+    uint32_t b = (b0 * w0 + b1 * w1) / div;
+    return r | (g << 8) | (b << 16) | (0xFFu << 24);
+}
+
+static void dxt_decompress_to_rgba(const void *src, uint32_t *dst, unsigned w, unsigned h, unsigned src_pitch, unsigned d3dfmt) {
+    const uint8_t *src_bytes = (const uint8_t *)src;
+    unsigned bx_cnt = (w + 3) / 4;
+    unsigned by_cnt = (h + 3) / 4;
+    unsigned block_size = (d3dfmt == 0x31545844) ? 8 : 16;
+    unsigned eff_pitch = src_pitch ? src_pitch : (bx_cnt * block_size);
+
+    for (unsigned by = 0; by < by_cnt; by++) {
+        const uint8_t *row_ptr = src_bytes + by * eff_pitch;
+        for (unsigned bx = 0; bx < bx_cnt; bx++) {
+            const uint8_t *blk = row_ptr + bx * block_size;
+            uint32_t colors[4];
+            const uint8_t *col_blk = (d3dfmt == 0x31545844) ? blk : (blk + 8);
+            uint16_t c0 = col_blk[0] | (col_blk[1] << 8);
+            uint16_t c1 = col_blk[2] | (col_blk[3] << 8);
+            uint32_t bits = col_blk[4] | (col_blk[5] << 8) | (col_blk[6] << 16) | (col_blk[7] << 24);
+
+            colors[0] = dxt_rgb565_to_rgba8(c0, 255);
+            colors[1] = dxt_rgb565_to_rgba8(c1, 255);
+
+            if (d3dfmt == 0x31545844) {
+                if (c0 > c1) {
+                    colors[2] = dxt_lerp_color(colors[0], colors[1], 2, 1, 3);
+                    colors[3] = dxt_lerp_color(colors[0], colors[1], 1, 2, 3);
+                } else {
+                    colors[2] = dxt_lerp_color(colors[0], colors[1], 1, 1, 2);
+                    colors[3] = 0;
+                }
+            } else {
+                colors[2] = dxt_lerp_color(colors[0], colors[1], 2, 1, 3);
+                colors[3] = dxt_lerp_color(colors[0], colors[1], 1, 2, 3);
+            }
+
+            uint8_t alpha[16];
+            if (d3dfmt == 0x31545844) {
+            } else if (d3dfmt == 0x33545844) {
+                for (int i = 0; i < 8; i++) {
+                    alpha[2 * i]     = (blk[i] & 0x0F) * 17;
+                    alpha[2 * i + 1] = ((blk[i] >> 4) & 0x0F) * 17;
+                }
+            } else if (d3dfmt == 0x35545844) {
+                uint8_t a0 = blk[0], a1 = blk[1];
+                uint8_t apal[8];
+                apal[0] = a0; apal[1] = a1;
+                if (a0 > a1) {
+                    for (int i = 1; i <= 6; i++) apal[1 + i] = ((7 - i) * a0 + i * a1) / 7;
+                } else {
+                    for (int i = 1; i <= 4; i++) apal[1 + i] = ((5 - i) * a0 + i * a1) / 5;
+                    apal[6] = 0; apal[7] = 255;
+                }
+                uint64_t abits = 0;
+                for (int i = 0; i < 6; i++) abits |= ((uint64_t)blk[2 + i]) << (8 * i);
+                for (int i = 0; i < 16; i++) {
+                    alpha[i] = apal[(abits >> (3 * i)) & 7];
+                }
+            }
+
+            for (unsigned dy = 0; dy < 4; dy++) {
+                unsigned py = by * 4 + dy;
+                if (py >= h) break;
+                for (unsigned dx = 0; dx < 4; dx++) {
+                    unsigned px = bx * 4 + dx;
+                    if (px >= w) break;
+                    unsigned pidx = dy * 4 + dx;
+                    uint32_t col = colors[(bits >> (2 * pidx)) & 3];
+                    if (d3dfmt != 0x31545844) {
+                        col = (col & 0x00FFFFFFu) | ((uint32_t)alpha[pidx] << 24);
+                    }
+                    dst[py * w + px] = col;
+                }
+            }
+        }
+    }
+}
+#endif
+
 void metal_upload_texture_face(unsigned id_, unsigned level, unsigned face,
                                const void *data, unsigned pitch,
                                unsigned w, unsigned h, unsigned d3dfmt){
@@ -3107,6 +3211,31 @@ void metal_upload_texture_face(unsigned id_, unsigned level, unsigned face,
     if (!lw) lw = 1; if (!lh) lh = 1;
     MTLRegion rg = MTLRegionMake2D(0, 0, lw, lh);
     struct timespec _u0; if (g_perflog) clock_gettime(CLOCK_MONOTONIC, &_u0);
+
+#if TARGET_OS_IPHONE
+    void *decomp_buf = NULL;
+    const void *upload_data = data;
+    unsigned upload_pitch = pitch;
+
+    if (d3dfmt == 0x31545844 || d3dfmt == 0x33545844 || d3dfmt == 0x35545844) {
+        decomp_buf = malloc((size_t)lw * lh * 4);
+        if (decomp_buf) {
+            dxt_decompress_to_rgba(data, (uint32_t*)decomp_buf, lw, lh, pitch, d3dfmt);
+            upload_data = decomp_buf;
+            upload_pitch = lw * 4;
+        }
+    }
+
+    if (g_tex_cube[id_]){
+        if (face > 5u) face = 0u;
+        [g_tex[id_] replaceRegion:rg mipmapLevel:level slice:face
+                        withBytes:upload_data bytesPerRow:upload_pitch bytesPerImage:0];
+    } else {
+        [g_tex[id_] replaceRegion:rg mipmapLevel:level withBytes:upload_data bytesPerRow:upload_pitch];
+    }
+
+    if (decomp_buf) free(decomp_buf);
+#else
     if (g_tex_cube[id_]){
         if (face > 5u) face = 0u;
         [g_tex[id_] replaceRegion:rg mipmapLevel:level slice:face
@@ -3114,6 +3243,7 @@ void metal_upload_texture_face(unsigned id_, unsigned level, unsigned face,
     } else {
         [g_tex[id_] replaceRegion:rg mipmapLevel:level withBytes:data bytesPerRow:pitch];
     }
+#endif
     if (g_perflog){ struct timespec _u1; clock_gettime(CLOCK_MONOTONIC, &_u1);
         perflog_event(PL_TEXUP, (uint64_t)(_u1.tv_sec - _u0.tv_sec) * 1000000000ull + (uint64_t)_u1.tv_nsec - (uint64_t)_u0.tv_nsec,
                       (uint64_t)pitch * (blk == 1 ? lh : (lh + blk - 1) / blk)); }
