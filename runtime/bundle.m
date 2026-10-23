@@ -880,9 +880,11 @@ static void app_set_defaults(void){
 
 /* Save overlay for the file layer (boot.c): NFSU2_SAVEDIR, which app_setup
  * points at Overlay/ and tools/autorun.sh at a per-run directory. */
+#if TARGET_OS_IPHONE
+static char s_doc[1200];
+#endif
 const char *app_save_dir(void){
 #if TARGET_OS_IPHONE
-    static char s_doc[1200];
     if (!s_doc[0]){
         NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
         NSString *doc = [paths.firstObject stringByAppendingPathComponent:@"nfsu2"];
