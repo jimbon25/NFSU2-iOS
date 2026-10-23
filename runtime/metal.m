@@ -48,7 +48,11 @@ void metal_set_layer(CAMetalLayer *layer){
         layer.device = g_dev;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = NO;
+#if TARGET_OS_IPHONE
+        layer.contentsGravity = kCAGravityResize;
+#else
         layer.contentsGravity = kCAGravityResizeAspect;
+#endif
     }
 }
 static long             g_skip_empty;   /* frame with no content: do not present */
@@ -297,18 +301,8 @@ void metal_ios_touch_point(float view_x, float view_y, float view_w, float view_
     if (lw < 1.0) lw = 1280.0;
     if (lh < 1.0) lh = 960.0;
 
-    double a = atomic_load(&g_ui_asp) / 10000.0;
-    if (a <= 0.05 || a > 1.0) a = 1.0;
-    double b = atomic_load(&g_ui_asp_y) / 10000.0;
-    if (b <= 0.05 || b > 1.0) b = 1.0;
-
-    double ox = view_w * (1.0 - a) * 0.5;
-    double vw = view_w * a;
-    double oy = view_h * (1.0 - b) * 0.5;
-    double vh = view_h * b;
-
-    double gx = (view_x - ox) / vw * lw;
-    double gy = (view_y - oy) / vh * lh;
+    double gx = ((double)view_x / (double)view_w) * lw;
+    double gy = ((double)view_y / (double)view_h) * lh;
     if (gx < 0.0) gx = 0.0; else if (gx > lw - 1.0) gx = lw - 1.0;
     if (gy < 0.0) gy = 0.0; else if (gy > lh - 1.0) gy = lh - 1.0;
 

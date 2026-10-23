@@ -7,6 +7,7 @@
 #define DIK_RETURN          0x1C
 #define DIK_LSHIFT          0x2A
 #define DIK_SPACE           0x39
+#define DIK_LMENU           0x38
 #define DIK_UP              0xC8
 #define DIK_LEFT            0xCB
 #define DIK_RIGHT           0xCD
@@ -22,6 +23,7 @@ static inline uint8_t dik_to_vk(unsigned dik) {
     case DIK_RIGHT:  return 0x27; // VK_RIGHT
     case DIK_SPACE:  return 0x20; // VK_SPACE
     case DIK_LSHIFT: return 0x10; // VK_SHIFT
+    case DIK_LMENU:  return 0x12; // VK_MENU
     default:         return 0;
     }
 }
@@ -38,6 +40,7 @@ typedef struct {
     const char *label;
     BOOL isDown;
     UITouch *activeTouch;
+    CGFloat cornerRadius;
 } TouchButton;
 
 @implementation NfsuMetalView
@@ -67,6 +70,7 @@ typedef struct {
     [super layoutSubviews];
     CGFloat s = [UIScreen mainScreen].scale;
     self.metalLayer.contentsScale = s;
+    self.metalLayer.contentsGravity = kCAGravityResize;
     if (self.bounds.size.width > 0 && self.bounds.size.height > 0) {
         self.metalLayer.drawableSize = CGSizeMake(self.bounds.size.width * s, self.bounds.size.height * s);
     }
@@ -85,6 +89,7 @@ typedef struct {
     TouchButton _btnEnter;
     TouchButton _btnMoney;
     BOOL _gamepadConnected;
+    UIImpactFeedbackGenerator *_hapticFeedback;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -93,6 +98,9 @@ typedef struct {
         self.multipleTouchEnabled = YES;
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = YES;
+        _hapticFeedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [_hapticFeedback prepare];
+
         [self updateButtonLayout];
 
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -128,57 +136,72 @@ typedef struct {
     CGFloat h = self.bounds.size.height;
     if (w <= 0 || h <= 0) return;
 
-    CGFloat safeBottom = 16.0;
-    CGFloat safeSide = 22.0;
-
-    CGFloat steerW = 68.0, steerH = 68.0;
-    CGFloat steerY = h - steerH - safeBottom - 10.0;
-    _btnLeft.rect = CGRectMake(safeSide, steerY, steerW, steerH);
+    /* Left side: steering buttons (clean circular touch buttons positioned to not block radar) */
+    CGFloat steerSize = 64.0;
+    CGFloat steerY = h - steerSize - 18.0;
+    _btnLeft.rect = CGRectMake(16.0, steerY, steerSize, steerSize);
     _btnLeft.dik = DIK_LEFT;
     _btnLeft.label = "<";
+    _btnLeft.cornerRadius = steerSize * 0.5;
 
-    _btnRight.rect = CGRectMake(safeSide + steerW + 14.0, steerY, steerW, steerH);
+    _btnRight.rect = CGRectMake(16.0 + steerSize + 12.0, steerY, steerSize, steerSize);
     _btnRight.dik = DIK_RIGHT;
     _btnRight.label = ">";
+    _btnRight.cornerRadius = steerSize * 0.5;
 
-    CGFloat pedalW = 72.0, pedalH = 80.0;
-    CGFloat gasX = w - safeSide - pedalW - 5.0;
-    CGFloat gasY = h - pedalH - safeBottom - 10.0;
-    _btnGas.rect = CGRectMake(gasX, gasY, pedalW, pedalH);
+    /* Right side: 2x2 cluster pushed to the right edge to avoid blocking speedometer */
+    CGFloat gasW = 62.0;
+    CGFloat gasH = 105.0;
+    CGFloat gasX = w - gasW - 14.0;
+    CGFloat gasY = h - gasH - 16.0;
+    _btnGas.rect = CGRectMake(gasX, gasY, gasW, gasH);
     _btnGas.dik = DIK_UP;
     _btnGas.label = "GAS";
+    _btnGas.cornerRadius = 22.0;
 
-    CGFloat brakeX = gasX - pedalW - 16.0;
-    CGFloat brakeY = gasY + 6.0;
-    _btnBrake.rect = CGRectMake(brakeX, brakeY, pedalW, pedalH - 6.0);
+    CGFloat brakeW = 64.0;
+    CGFloat brakeH = 75.0;
+    CGFloat brakeX = gasX - brakeW - 14.0;
+    CGFloat brakeY = h - brakeH - 16.0;
+    _btnBrake.rect = CGRectMake(brakeX, brakeY, brakeW, brakeH);
     _btnBrake.dik = DIK_DOWN;
     _btnBrake.label = "BRAKE";
+    _btnBrake.cornerRadius = 20.0;
 
-    CGFloat actW = 58.0, actH = 58.0;
-    CGFloat nosX = gasX - 8.0;
-    CGFloat nosY = gasY - actH - 14.0;
-    _btnNos.rect = CGRectMake(nosX, nosY, actW, actH);
+    CGFloat nosW = 62.0;
+    CGFloat nosH = 55.0;
+    CGFloat nosX = gasX;
+    CGFloat nosY = gasY - nosH - 12.0;
+    _btnNos.rect = CGRectMake(nosX, nosY, nosW, nosH);
     _btnNos.dik = DIK_LSHIFT;
     _btnNos.label = "NOS";
+    _btnNos.cornerRadius = 18.0;
 
-    CGFloat hbX = brakeX - 8.0;
-    CGFloat hbY = gasY - actH - 14.0;
-    _btnHandbrake.rect = CGRectMake(hbX, hbY, actW, actH);
+    CGFloat hbW = 64.0;
+    CGFloat hbH = 55.0;
+    CGFloat hbX = brakeX;
+    CGFloat hbY = brakeY - hbH - 12.0;
+    _btnHandbrake.rect = CGRectMake(hbX, hbY, hbW, hbH);
     _btnHandbrake.dik = DIK_SPACE;
     _btnHandbrake.label = "HAND\nBRAKE";
+    _btnHandbrake.cornerRadius = 18.0;
 
-    CGFloat topBtnW = 60.0, topBtnH = 34.0;
-    _btnPause.rect = CGRectMake(safeSide + 10.0, 15.0, topBtnW, topBtnH);
+    /* Top bar: utility shortcuts */
+    CGFloat topBtnW = 56.0, topBtnH = 32.0;
+    _btnPause.rect = CGRectMake(18.0, 12.0, topBtnW, topBtnH);
     _btnPause.dik = DIK_ESCAPE;
     _btnPause.label = "ESC";
+    _btnPause.cornerRadius = 10.0;
 
-    _btnEnter.rect = CGRectMake(safeSide + topBtnW + 24.0, 15.0, topBtnW, topBtnH);
+    _btnEnter.rect = CGRectMake(18.0 + topBtnW + 12.0, 12.0, topBtnW + 8.0, topBtnH);
     _btnEnter.dik = DIK_RETURN;
     _btnEnter.label = "ENTER";
+    _btnEnter.cornerRadius = 10.0;
 
-    _btnMoney.rect = CGRectMake(w - safeSide - topBtnW - 15.0, 15.0, topBtnW + 15.0, topBtnH);
+    _btnMoney.rect = CGRectMake(w - 95.0, 12.0, 80.0, topBtnH);
     _btnMoney.dik = 0;
     _btnMoney.label = "$$ MAX";
+    _btnMoney.cornerRadius = 10.0;
 
     [self setNeedsDisplay];
 }
@@ -187,13 +210,16 @@ typedef struct {
     CGRect r = btn->rect;
     CGContextSaveGState(ctx);
 
-    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:r cornerRadius:r.size.height * 0.35];
+    CGFloat cr = btn->cornerRadius > 0 ? btn->cornerRadius : (r.size.height * 0.35);
+    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:r cornerRadius:cr];
+
     if (btn->isDown) {
-        CGContextSetRGBFillColor(ctx, 1.0, 0.45, 0.1, 0.60);
-        CGContextSetRGBStrokeColor(ctx, 1.0, 0.6, 0.2, 0.95);
+        CGContextSetRGBFillColor(ctx, 1.0, 0.42, 0.05, 0.65);
+        CGContextSetRGBStrokeColor(ctx, 1.0, 0.65, 0.2, 1.0);
     } else {
-        CGContextSetRGBFillColor(ctx, 0.08, 0.08, 0.12, 0.30);
-        CGContextSetRGBStrokeColor(ctx, 1.0, 1.0, 1.0, 0.30);
+        /* Crystal-clear translucent glass fill so background and HUD stay legible */
+        CGContextSetRGBFillColor(ctx, 0.10, 0.14, 0.20, 0.16);
+        CGContextSetRGBStrokeColor(ctx, 1.0, 1.0, 1.0, 0.40);
     }
     [path fill];
 
@@ -205,7 +231,7 @@ typedef struct {
     style.alignment = NSTextAlignmentCenter;
 
     NSDictionary *attr = @{
-        NSFontAttributeName: [UIFont boldSystemFontOfSize:r.size.height < 50 ? 12 : 14],
+        NSFontAttributeName: [UIFont boldSystemFontOfSize:r.size.height < 50 ? 11 : 13],
         NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:btn->isDown ? 1.0 : 0.85],
         NSParagraphStyleAttributeName: style
     };
@@ -253,10 +279,20 @@ typedef struct {
     btn->isDown = YES;
     btn->activeTouch = touch;
 
+    if (_hapticFeedback) {
+        [_hapticFeedback impactOccurred];
+    }
+
     if (btn->dik != 0) {
         uint8_t vk = dik_to_vk(btn->dik);
         uint32_t lp = dik_to_lparam(btn->dik, 0);
         kbd_set_key(KSRC_HOST, btn->dik, 1);
+
+        /* NOS fires both Left Shift and Left Alt (DIK_LMENU) for maximum compatibility */
+        if (btn == &_btnNos) {
+            kbd_set_key(KSRC_HOST, DIK_LMENU, 1);
+        }
+
         if (vk) {
             kbd_post(0x0100 /* WM_KEYDOWN */, vk, lp);
             if (vk == 0x0D || vk == 0x1B) {
@@ -280,6 +316,11 @@ typedef struct {
         uint8_t vk = dik_to_vk(btn->dik);
         uint32_t lp = dik_to_lparam(btn->dik, 1);
         kbd_set_key(KSRC_HOST, btn->dik, 0);
+
+        if (btn == &_btnNos) {
+            kbd_set_key(KSRC_HOST, DIK_LMENU, 0);
+        }
+
         if (vk) {
             kbd_post(0x0101 /* WM_KEYUP */, vk, lp);
         }
@@ -358,13 +399,20 @@ typedef struct {
     extern void metal_early_init(void);
     metal_early_init();
 
-    self.metalView = [[NfsuMetalView alloc] initWithFrame:self.view.bounds];
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat w = fmax(screenBounds.size.width, screenBounds.size.height);
+    CGFloat h = fmin(screenBounds.size.width, screenBounds.size.height);
+    CGRect landscapeBounds = CGRectMake(0, 0, w, h);
+
+    self.view.frame = landscapeBounds;
+
+    self.metalView = [[NfsuMetalView alloc] initWithFrame:landscapeBounds];
     self.metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.metalView];
 
     metal_set_layer(self.metalView.metalLayer);
 
-    self.touchOverlay = [[NfsuTouchOverlay alloc] initWithFrame:self.view.bounds];
+    self.touchOverlay = [[NfsuTouchOverlay alloc] initWithFrame:landscapeBounds];
     self.touchOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.touchOverlay];
 
@@ -373,6 +421,20 @@ typedef struct {
         _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(60.0, 120.0, 60.0);
     }
     [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat w = fmax(screenBounds.size.width, screenBounds.size.height);
+    CGFloat h = fmin(screenBounds.size.width, screenBounds.size.height);
+    CGRect landscapeBounds = CGRectMake(0, 0, w, h);
+
+    if (!CGRectEqualToRect(self.view.frame, landscapeBounds)) {
+        self.view.frame = landscapeBounds;
+    }
+    self.metalView.frame = landscapeBounds;
+    self.touchOverlay.frame = landscapeBounds;
 }
 
 - (void)onFrameTick:(CADisplayLink *)link {
@@ -387,6 +449,10 @@ typedef struct {
     return YES;
 }
 
+- (UIRectEdge)preferredScreenEdgesDeferringSystemGestures {
+    return UIRectEdgeAll;
+}
+
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations {
     return UIInterfaceOrientationMaskLandscape;
 }
@@ -396,7 +462,14 @@ typedef struct {
 @implementation NfsuAppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    [application setStatusBarHidden:YES withAnimation:UIStatusBarAnimationNone];
+
+    CGRect screenBounds = [UIScreen mainScreen].bounds;
+    CGFloat w = fmax(screenBounds.size.width, screenBounds.size.height);
+    CGFloat h = fmin(screenBounds.size.width, screenBounds.size.height);
+    CGRect landscapeBounds = CGRectMake(0, 0, w, h);
+
+    self.window = [[UIWindow alloc] initWithFrame:landscapeBounds];
     self.viewController = [[NfsuViewController alloc] init];
     self.window.rootViewController = self.viewController;
     [self.window makeKeyAndVisible];

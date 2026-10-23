@@ -130,7 +130,7 @@ cat << 'EOF' > "$APP_DIR/Info.plist"
     <key>UIStatusBarHidden</key>
     <true/>
     <key>UIViewControllerBasedStatusBarAppearance</key>
-    <false/>
+    <true/>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationLandscapeLeft</string>
