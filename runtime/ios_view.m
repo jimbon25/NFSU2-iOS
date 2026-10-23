@@ -259,6 +259,14 @@ typedef struct {
     [self drawButton:&_btnPause inContext:ctx];
     [self drawButton:&_btnEnter inContext:ctx];
     [self drawButton:&_btnMoney inContext:ctx];
+
+    /* Version watermark below top-left buttons */
+    NSString *ver = @"v1.2.5";
+    NSDictionary *vAttr = @{
+        NSFontAttributeName: [UIFont systemFontOfSize:10 weight:UIFontWeightMedium],
+        NSForegroundColorAttributeName: [UIColor colorWithWhite:1.0 alpha:0.40]
+    };
+    [ver drawAtPoint:CGPointMake(18.0, 48.0) withAttributes:vAttr];
 }
 
 - (TouchButton *)buttonAtPoint:(CGPoint)pt {
@@ -399,20 +407,13 @@ typedef struct {
     extern void metal_early_init(void);
     metal_early_init();
 
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat w = fmax(screenBounds.size.width, screenBounds.size.height);
-    CGFloat h = fmin(screenBounds.size.width, screenBounds.size.height);
-    CGRect landscapeBounds = CGRectMake(0, 0, w, h);
-
-    self.view.frame = landscapeBounds;
-
-    self.metalView = [[NfsuMetalView alloc] initWithFrame:landscapeBounds];
+    self.metalView = [[NfsuMetalView alloc] initWithFrame:self.view.bounds];
     self.metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.metalView];
 
     metal_set_layer(self.metalView.metalLayer);
 
-    self.touchOverlay = [[NfsuTouchOverlay alloc] initWithFrame:landscapeBounds];
+    self.touchOverlay = [[NfsuTouchOverlay alloc] initWithFrame:self.view.bounds];
     self.touchOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.touchOverlay];
 
@@ -425,16 +426,9 @@ typedef struct {
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat w = fmax(screenBounds.size.width, screenBounds.size.height);
-    CGFloat h = fmin(screenBounds.size.width, screenBounds.size.height);
-    CGRect landscapeBounds = CGRectMake(0, 0, w, h);
-
-    if (!CGRectEqualToRect(self.view.frame, landscapeBounds)) {
-        self.view.frame = landscapeBounds;
-    }
-    self.metalView.frame = landscapeBounds;
-    self.touchOverlay.frame = landscapeBounds;
+    CGRect b = self.view.bounds;
+    self.metalView.frame = b;
+    self.touchOverlay.frame = b;
 }
 
 - (void)onFrameTick:(CADisplayLink *)link {
@@ -464,12 +458,7 @@ typedef struct {
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     [application setStatusBarHidden:YES withAnimation:UIStatusBarAnimationNone];
 
-    CGRect screenBounds = [UIScreen mainScreen].bounds;
-    CGFloat w = fmax(screenBounds.size.width, screenBounds.size.height);
-    CGFloat h = fmin(screenBounds.size.width, screenBounds.size.height);
-    CGRect landscapeBounds = CGRectMake(0, 0, w, h);
-
-    self.window = [[UIWindow alloc] initWithFrame:landscapeBounds];
+    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
     self.viewController = [[NfsuViewController alloc] init];
     self.window.rootViewController = self.viewController;
     [self.window makeKeyAndVisible];

@@ -113,11 +113,13 @@ cat << 'EOF' > "$APP_DIR/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.2.0</string>
+    <string>1.2.5</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>5</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>UILaunchScreen</key>
+    <dict/>
     <key>MinimumOSVersion</key>
     <string>14.0</string>
     <key>UIDeviceFamily</key>
@@ -130,7 +132,7 @@ cat << 'EOF' > "$APP_DIR/Info.plist"
     <key>UIStatusBarHidden</key>
     <true/>
     <key>UIViewControllerBasedStatusBarAppearance</key>
-    <true/>
+    <false/>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationLandscapeLeft</string>

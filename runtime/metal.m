@@ -44,8 +44,8 @@ static id<MTLDevice>    g_dev;
 static CAMetalLayer    *g_layer;
 void metal_set_layer(CAMetalLayer *layer){
     g_layer = layer;
-    if (layer && g_dev){
-        layer.device = g_dev;
+    if (layer){
+        if (g_dev) layer.device = g_dev;
         layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         layer.framebufferOnly = NO;
 #if TARGET_OS_IPHONE
