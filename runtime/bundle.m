@@ -94,7 +94,7 @@ static int no_ui(void){
     const char *a = getenv("NFSU2_NO_UI"), *b = getenv("NOFOCUS");
     return (a && *a && *a != '0') || (b && *b && *b != '0');
 }
-static void app_alert(const char *title, const char *msg){
+void app_alert(const char *title, const char *msg){
     fprintf(stderr, "app: %s -- %s\n", title, msg);
 #if TARGET_OS_IPHONE
     dispatch_async(dispatch_get_main_queue(), ^{
